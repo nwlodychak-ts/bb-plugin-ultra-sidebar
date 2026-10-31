@@ -41,6 +41,10 @@ bb plugin install .
   default. A collapsed parent shows the descendant count and lights up when a
   subagent anywhere below it is waiting; opening the thread that is waiting
   opens every chevron above it. Dragging a parent moves its whole subtree.
+- **Move a thread in the tree** from its right-click menu. **Move to top
+  level** lifts a subthread out of its parent, and **Move under…** searches
+  the project's threads for a new parent. Its own subthreads move with it,
+  and Undo puts it back. Workflow workers stay under their workflow.
 
 ## Using it
 

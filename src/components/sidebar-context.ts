@@ -1,5 +1,8 @@
 import { createContext, useContext } from "react";
-import type { experimental_useProviders } from "@get-bb/plugin-sdk/app";
+import type {
+  experimental_useProviders,
+  PluginSidebarThread,
+} from "@get-bb/plugin-sdk/app";
 
 /** The SDK does not export ProviderInfo by name; take it from the hook. */
 export type ProviderInfo = ReturnType<
@@ -10,6 +13,7 @@ import type { RowDetails } from "../hooks/useViewState";
 import type { EnvironmentLocation } from "../hooks/useEnvironmentLocations";
 import type { ProjectArtwork } from "../hooks/useProjectArtwork";
 import type { ManualStatus } from "../lib/status";
+import type { MoveOptions } from "../lib/move-targets";
 
 export interface SidebarContextValue {
   activeThreadId: string | null;
@@ -36,6 +40,10 @@ export interface SidebarContextValue {
   setPinned(threadId: string, pinned: boolean): void;
   setRead(threadId: string, read: boolean): void;
   renameThread(threadId: string, title: string): void;
+  /** Where a thread can move, or null when its row's parent is not bb's to change. */
+  moveOptionsOf(thread: PluginSidebarThread): MoveOptions | null;
+  /** Move under another thread, or to the top level with null. */
+  moveThread(threadId: string, parentThreadId: string | null): void;
   archiveThread(threadId: string): void;
   /** Re-submit the turn that failed, the same as bb's own Retry. */
   retryThread(threadId: string): void;

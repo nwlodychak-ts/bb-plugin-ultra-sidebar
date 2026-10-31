@@ -3,7 +3,7 @@
 // bb ships no menu for a replaced thread list, but exposes everything its own
 // menu does through experimental_useSidebarThreadActions — including
 // requestDelete, which opens bb's confirmation rather than deleting silently.
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import {
@@ -24,6 +24,7 @@ import type { Section } from "@/lib/sections";
 import { STATUS_BUCKETS, canFileInto, type ManualStatus } from "@/lib/status";
 import { useSidebar } from "./sidebar-context";
 import { StatusIcon } from "./StatusIcon";
+import { MoveThreadDialog } from "./MoveThreadDialog";
 
 const STATUS_CHOICES = STATUS_BUCKETS.filter((bucket) =>
   canFileInto(bucket.key),
@@ -42,6 +43,25 @@ const SNOOZE_CHOICES = [
   { label: "For a day", ms: 24 * 60 * 60 * 1000 },
   { label: "For a week", ms: 7 * 24 * 60 * 60 * 1000 },
 ];
+
+/** Reparent items; computed only while the menu is open, since every row has one. */
+function MoveItems({ thread, onMoveUnder }: { thread: PluginSidebarThread; onMoveUnder(): void }) {
+  const sidebar = useSidebar();
+  const options = sidebar.moveOptionsOf(thread);
+  if (options === null) return null;
+  return (
+    <>
+      {options.parentThreadId !== null && (
+        <ContextMenuItem onSelect={() => sidebar.moveThread(thread.id, null)}>
+          <Icon name="MoveToTop" />Move to top level
+        </ContextMenuItem>
+      )}
+      <ContextMenuItem disabled={options.targets.length === 0} onSelect={onMoveUnder}>
+        <Icon name="MoveUnder" />Move under…
+      </ContextMenuItem>
+    </>
+  );
+}
 
 /**
  * Everything the drag does, from the keyboard. A thread cannot be dragged
@@ -93,6 +113,7 @@ export function RowContextMenu({
   // but Rename that is what we want; for Rename it blurs the input that just
   // opened, which commits an empty edit and closes it again.
   const keepFocus = useRef(false);
+  const [moveOpen, setMoveOpen] = useState(false);
   const copyThreadLink = async () => {
     const path = thread.projectId === "proj_personal"
       ? `/threads/${encodeURIComponent(thread.id)}`
@@ -157,6 +178,10 @@ export function RowContextMenu({
             </ContextMenuItem>
           )}
           <OrderMenu item={item} canReorder={thread.parentThreadId === null} />
+          <MoveItems
+            thread={thread}
+            onMoveUnder={() => { keepFocus.current = true; setMoveOpen(true); }}
+          />
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <Icon name="CircleCheck" />Status
@@ -221,6 +246,7 @@ export function RowContextMenu({
           </ContextMenuItem>
         </ContextMenuGroup>
       </ContextMenuContent>
+      <MoveThreadDialog thread={thread} open={moveOpen} onOpenChange={setMoveOpen} />
     </ContextMenu>
   );
 }

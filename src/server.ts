@@ -182,6 +182,15 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.null(),
   },
+  /** Move a thread under another one, or to the top level when parentThreadId is null. */
+  "threads.setParent": {
+    input: z.object({
+      threadId: z.string().min(1),
+      expected: z.string().nullable(),
+      parentThreadId: z.string().min(1).nullable(),
+    }),
+    output: z.null(),
+  },
   "threads.handoffOptions": {
     input: z.object({ threadId: z.string().min(1), providerId: z.string().min(1).optional() }),
     output: z.object({
@@ -388,6 +397,29 @@ export default async function plugin(bb: BbPluginApi) {
           "The thread was renamed elsewhere. Undo was not applied.",
         );
       await bb.sdk.threads.update({ threadId, title });
+      return null;
+    },
+    "threads.setParent": async ({ threadId, expected, parentThreadId }) => {
+      const thread = await bb.sdk.threads.get({ threadId });
+      // Undo and redo replay a remembered parent; if the thread moved since,
+      // replaying it would silently undo somebody else's move.
+      if (thread.parentThreadId !== expected)
+        throw new Error("The thread was moved elsewhere. The move was not applied.");
+      if (parentThreadId !== null) {
+        const parent = await bb.sdk.threads.get({ threadId: parentThreadId });
+        if (parent.projectId !== thread.projectId)
+          throw new Error("A thread can only move under a thread in its own project.");
+        const seen = new Set<string>();
+        let ancestor = parent;
+        while (!seen.has(ancestor.id)) {
+          if (ancestor.id === threadId)
+            throw new Error("A thread cannot move under itself or one of its subthreads.");
+          seen.add(ancestor.id);
+          if (ancestor.parentThreadId === null) break;
+          ancestor = await bb.sdk.threads.get({ threadId: ancestor.parentThreadId });
+        }
+      }
+      await bb.sdk.threads.update({ threadId, parentThreadId });
       return null;
     },
     "threads.handoffOptions": async ({ threadId, providerId }) => {

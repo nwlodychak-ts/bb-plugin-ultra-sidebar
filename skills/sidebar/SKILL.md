@@ -23,7 +23,11 @@ grouped by **project** or by **status**. Read and file them with `bb sidebar`.
    Backlog clears when you submit a prompt (including queued prompts) or the
    agent starts running; the thread returns to its automatic status.
 4. Subagent threads are **nested under the thread that spawned them** and are
-   never ordered separately. A subtree always follows its root.
+   never ordered separately. A subtree always follows its root. The parent is
+   bb's own, so moving a thread changes it everywhere: the row menu's **Move
+   to top level** and **Move under…**, or `bb thread update <id>
+   --clear-parent-thread` and `--parent-thread <parent-id>`. A thread moves
+   only within its project, never under its own subthreads.
 
 Active workflow workers use the same nested child-thread rows and parent
 chevron as other subagents. Running children reveal their parent once; users

@@ -4,14 +4,22 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import { RowContextMenu, SectionContextMenu } from "./RowContextMenu";
 import type { Section } from "@/lib/sections";
+import type { MoveOptions } from "@/lib/move-targets";
 
 const actions = vi.hoisted(() => ({
   openThread: vi.fn(), openFolder: vi.fn(), openUrl: vi.fn(),
   nudge: vi.fn(), resetOrder: vi.fn(), setStatus: vi.fn(), setSnoozed: vi.fn(),
   setPinned: vi.fn(), setRead: vi.fn(), archiveThread: vi.fn(), retryThread: vi.fn(),
-  deleteThread: vi.fn(), newThreadIn: vi.fn(),
+  deleteThread: vi.fn(), newThreadIn: vi.fn(), moveThread: vi.fn(),
+  moveOptionsOf: vi.fn((thread: PluginSidebarThread): MoveOptions | null => ({
+    parentThreadId: thread.parentThreadId,
+    targets: [{ id: "t2", title: "Fix the login bug" }, { id: "t3", title: "Write release notes" }],
+  })),
 }));
 vi.mock("./sidebar-context", () => ({ useSidebar: () => actions }));
+// jsdom lacks both; cmdk's list measures itself and scrolls to the selection.
+vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+Element.prototype.scrollIntoView = () => {};
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -128,6 +136,34 @@ describe("thread context menus", () => {
     await openOrderMenu();
     expect(screen.getByRole("menuitem", { name: /^Move up/ }).getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByRole("menuitem", { name: /^Move down/ }).getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("moves a subthread to the top level, and offers that only to a subthread", async () => {
+    mount("parent");
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Move to top level/ }));
+    expect(actions.moveThread).toHaveBeenCalledWith("t1", null);
+    cleanup();
+    mount();
+    await screen.findByRole("menu");
+    expect(screen.queryByRole("menuitem", { name: /Move to top level/ })).toBeNull();
+  });
+
+  it("picks a new parent by searching for it", async () => {
+    mount("parent");
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Move under/ }));
+    const dialog = await screen.findByRole("dialog", { name: /Move under/ });
+    fireEvent.change(within(dialog).getByPlaceholderText("Search threads…"), { target: { value: "release" } });
+    expect(within(dialog).queryByRole("option", { name: /Fix the login bug/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("option", { name: /Write release notes/ }));
+    expect(actions.moveThread).toHaveBeenCalledWith("t1", "t3");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers no move for a row whose parent bb does not own", async () => {
+    actions.moveOptionsOf.mockReturnValueOnce(null);
+    mount("workflow-parent");
+    await screen.findByRole("menu");
+    expect(screen.queryByRole("menuitem", { name: /Move to top level|Move under/ })).toBeNull();
   });
 });
 

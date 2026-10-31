@@ -75,6 +75,7 @@ import {
 import { revealPaths } from "@/lib/reveal-path";
 import { revealRow } from "@/lib/reveal-row";
 import { containsThread } from "@/lib/contains-thread";
+import { moveOptionsFor } from "@/lib/move-targets";
 import { previewRoots, SECTION_PREVIEW_SIZE } from "@/lib/section-preview";
 import { useSectionPreviews } from "@/hooks/useSectionPreviews";
 
@@ -590,6 +591,37 @@ export function UltraSidebar(props: PluginThreadListProps) {
           },
         });
         toast.success("Thread renamed", {
+          id: "sidebar-action",
+          action: {
+            label: "Undo",
+            onClick: () => {
+              void store.history.undo();
+            },
+          },
+        });
+      });
+    },
+    moveOptionsOf: (thread) => moveOptionsFor(hostThreadsRef.current, thread),
+    moveThread: (threadId, parentThreadId) => {
+      void store.history.enqueue(async () => {
+        const threadsNow = hostThreadsRef.current;
+        const before = threadsNow.find((thread) => thread.id === threadId)?.parentThreadId ?? null;
+        if (before === parentThreadId) return;
+        const parentTitle = parentThreadId === null
+          ? null
+          : threadsNow.find((thread) => thread.id === parentThreadId)?.displayTitle ?? "another thread";
+        await rpc.call("threads.setParent", { threadId, expected: before, parentThreadId });
+        if (parentThreadId !== null) expandedSubtrees.set(parentThreadId, true);
+        store.history.record({
+          label: "Thread moved",
+          undo: async () => {
+            await rpc.call("threads.setParent", { threadId, expected: parentThreadId, parentThreadId: before });
+          },
+          redo: async () => {
+            await rpc.call("threads.setParent", { threadId, expected: before, parentThreadId });
+          },
+        });
+        toast.success(parentTitle === null ? "Moved to top level" : `Moved under ${parentTitle}`, {
           id: "sidebar-action",
           action: {
             label: "Undo",
