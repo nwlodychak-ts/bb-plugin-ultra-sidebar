@@ -2,9 +2,12 @@
 import {
   experimental_ProviderIcon as ProviderIcon,
   UrlLink,
+  useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import type { rpcContract } from "../server";
+import type { ThreadBrief } from "@/lib/thread-brief";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { GoalDetails } from "./GoalDetails";
 import { PlanDetails } from "./PlanDetails";
@@ -15,8 +18,8 @@ import { ProjectIcon } from "./ProjectIcon";
 import { cn, formatHomePathForDisplay } from "@/lib/utils";
 import { useThreadExecution, type ThreadExecution } from "@/hooks/useThreadExecution";
 import { useSidebar, type ProviderInfo } from "./sidebar-context";
-import { absoluteTime, PR_ATTENTION, relativeTime } from "./MetaBadges";
-import { threadStatus, TONE_TEXT } from "./ThreadStatus";
+import { absoluteTime, jiraKeyOf, PR_ATTENTION, relativeTime } from "./MetaBadges";
+import { isAttention, threadStatus, TONE_TEXT } from "./ThreadStatus";
 import type { ThreadPullRequest } from "@/hooks/useThreadPullRequests";
 import type { ManualStatus } from "@/lib/status";
 import { flattenStack, StackList, usePullRequestStack } from "./PullRequestStack";
@@ -37,6 +40,31 @@ function Fact({ icon, label, children }: {
         <span className="sr-only">{label}: </span>
         {children}
       </div>
+    </div>
+  );
+}
+
+/** The thread's opening prompt, latest reply and open asks, refetched as it updates. */
+function useThreadBrief(threadId: string, updatedAt: number, enabled: boolean): ThreadBrief | null {
+  const rpc = useRpc<typeof rpcContract>();
+  const [brief, setBrief] = useState<ThreadBrief | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    rpc.call("threads.brief", { threadId }).then(
+      (next) => { if (live) setBrief(next); },
+      () => { if (live) setBrief({ about: null, latest: null, asks: [] }); },
+    );
+    return () => { live = false; };
+  }, [rpc, threadId, updatedAt, enabled]);
+  return brief;
+}
+
+function BriefLine({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-muted-foreground">{label}</span>
+      <p className="line-clamp-3 break-words text-foreground/85 [overflow-wrap:anywhere]">{text}</p>
     </div>
   );
 }
@@ -74,6 +102,13 @@ export function ThreadDetails({
   const needsResponse = thread.hasPendingInteraction || thread.indicator === "waiting-for-input";
   const queue = useThreadQueue(thread.id);
   const sidebar = useSidebar();
+  const show = sidebar.cardDetails;
+  const asking = show.ask && needsResponse;
+  const brief = useThreadBrief(thread.id, thread.updatedAt, show.summary || asking);
+  const asks = asking ? (brief?.asks ?? []) : [];
+  const jira = show.jira && sidebar.jiraSite !== null
+    ? jiraKeyOf(thread.environment?.branchName, pullRequest?.title, thread.title)
+    : null;
   const environmentId = thread.environment?.id ?? null;
   const folder = environmentId === null ? null : sidebar.locationOf(environmentId);
   const attention = pullRequest === undefined ? null : (PR_ATTENTION[pullRequest.attention] ?? PR_ATTENTION.none!);
@@ -125,16 +160,16 @@ export function ThreadDetails({
         )}
       </div>
 
-      {projectName !== "" || thread.host !== null || !inMotion ? (
+      {(show.project && projectName !== "") || (show.machine && thread.host !== null) || !inMotion ? (
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-4 text-muted-foreground">
-          {projectName === "" ? null : (
+          {!show.project || projectName === "" ? null : (
             <span className="inline-flex min-w-0 max-w-full items-center gap-1" title={`Project: ${projectName}`}>
               <ProjectIcon projectId={thread.projectId} className="size-3" />
               <span className="sr-only">Project: </span>
               <span className="truncate">{projectName}</span>
             </span>
           )}
-          {thread.host === null ? null : (
+          {!show.machine || thread.host === null ? null : (
             <span className="inline-flex min-w-0 max-w-full items-center gap-1" title={`Machine: ${thread.host.name}`}>
               <MachineIcon name={thread.host.name} className="size-3 shrink-0" />
               <span className="sr-only">Machine: </span>
@@ -152,13 +187,22 @@ export function ThreadDetails({
         </div>
       ) : null}
 
-      {thread.environment?.branchName == null ? null : (
+      {!show.summary ? null : brief === null ? (
+        <p className="border-t border-border pt-2 text-[11px] text-muted-foreground" role="status">Loading summary…</p>
+      ) : brief.about === null && brief.latest === null ? null : (
+        <section aria-label="Summary" className="flex flex-col gap-1.5 border-t border-border pt-2 text-[11px] leading-4">
+          {brief.about === null ? null : <BriefLine label="About" text={brief.about} />}
+          {brief.latest === null ? null : <BriefLine label="Latest" text={brief.latest} />}
+        </section>
+      )}
+
+      {!show.branch || thread.environment?.branchName == null ? null : (
         <Fact icon="FolderGit" label="Branch">
           <span className="break-all font-mono text-[11px] text-muted-foreground">{thread.environment.branchName}</span>
         </Fact>
       )}
 
-      {hasDetails ? (
+      {!show.model ? null : hasDetails ? (
         <details className="group/details">
           <summary className="flex min-h-5 cursor-pointer list-none items-center gap-2 rounded-sm text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
             {modelLine}
@@ -196,12 +240,21 @@ export function ThreadDetails({
         </details>
       ) : modelLine === null ? null : <div className="flex min-w-0 text-[11px] text-muted-foreground">{modelLine}</div>}
 
-      {status?.tone === "needs-you" || status?.tone === "problem" ? (
+      {(show.attention && status !== null && isAttention(status)) || asking ? (
         <div className="flex items-start gap-3 border-t border-border pt-2 text-[11px] leading-4">
-          <p className="min-w-0 flex-1 text-muted-foreground">{status.detail}</p>
+          {asks.length === 0 ? <p className="min-w-0 flex-1 text-muted-foreground">{status?.detail}</p> : (
+            <ul aria-label="Waiting on you" className="flex min-w-0 flex-1 flex-col gap-1.5">
+              {asks.map((ask, index) => (
+                <li key={index} className="break-words [overflow-wrap:anywhere]">
+                  <p className="line-clamp-4 font-medium text-foreground">{ask.prompt}</p>
+                  {ask.options.length === 0 ? null : <p className="mt-0.5 line-clamp-2 text-muted-foreground">{ask.options.join(" · ")}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
           <button
             type="button"
-            className={cn("inline-flex shrink-0 items-center gap-1 rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", TONE_TEXT[status.tone])}
+            className={cn("inline-flex shrink-0 items-center gap-1 rounded-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", status === null ? "text-foreground" : TONE_TEXT[status.tone])}
             onClick={() => sidebar.openThread(thread.id, false)}
           >
             {needsResponse ? "Respond" : "View thread"}
@@ -210,9 +263,9 @@ export function ThreadDetails({
         </div>
       ) : null}
 
-      {thread.activity.planMode > 0 || thread.indicator === "plan-mode" ? <PlanDetails threadId={thread.id} updatedAt={thread.updatedAt} /> : null}
-      {thread.activity.goals > 0 || thread.indicator === "goal" ? <GoalDetails threadId={thread.id} updatedAt={thread.updatedAt} /> : null}
-      {queue ? (
+      {show.modes && (thread.activity.planMode > 0 || thread.indicator === "plan-mode") ? <PlanDetails threadId={thread.id} updatedAt={thread.updatedAt} /> : null}
+      {show.modes && (thread.activity.goals > 0 || thread.indicator === "goal") ? <GoalDetails threadId={thread.id} updatedAt={thread.updatedAt} /> : null}
+      {show.queue && queue ? (
         <section className="flex flex-col gap-1 border-t border-border pt-2 text-[11px]" aria-label="Queued messages">
           <div className={cn("flex items-center gap-1.5 font-medium", queue.failed ? "ws-tone-danger" : "text-muted-foreground")}>
             <ModeIcon kind="schedule" />
@@ -223,14 +276,14 @@ export function ThreadDetails({
         </section>
       ) : null}
 
-      {stack !== null && stackSize >= 2 ? (
+      {!show.pullRequest ? null : stack !== null && stackSize >= 2 ? (
         <div className="border-t border-border pt-2">
           <span className="sr-only">Pull request stack, {stack.repo}: </span>
           <StackList data={stack} Link={UrlLink} />
         </div>
       ) : pullRequest === undefined || attention === null ? null : (
         <div className="border-t border-border pt-2">
-          <Fact icon="FolderGit" label="Pull request">
+          <Fact icon="Github" label="Pull request">
             <UrlLink href={pullRequest.url} className="flex flex-col gap-0.5 rounded-sm hover:underline" title={pullRequest.url}>
               <span>#{pullRequest.number} {pullRequest.title}</span>
               <span className={cn("text-[11px]", attention.className)}>{pullRequest.state} · {attention.text}</span>
@@ -239,7 +292,13 @@ export function ThreadDetails({
         </div>
       )}
 
-      {descendantCount === 0 && runningCounts.length === 0 ? null : (
+      {jira === null ? null : (
+        <Fact icon="Jira" label="Jira ticket">
+          <UrlLink href={`${sidebar.jiraSite}/browse/${jira}`} className="rounded-sm hover:underline">{jira}</UrlLink>
+        </Fact>
+      )}
+
+      {!show.nested || (descendantCount === 0 && runningCounts.length === 0) ? null : (
         <div className="flex flex-col gap-1.5 text-muted-foreground">
           {descendantCount === 0 ? null : (
             <Fact icon="Bot" label="Nested threads">

@@ -15,78 +15,116 @@ export const EXPANDED_SUBTREES_KEY = `${PREFIX}:expanded-subtrees:v1`;
 export const ROW_DETAILS_KEY = `${PREFIX}:row-details:v1`;
 export const COMPACT_ROWS_KEY = `${PREFIX}:compact-rows:v1`;
 export const PROJECT_ICONS_KEY = `${PREFIX}:project-icons:v1`;
+export const SINGLE_LINE_KEY = `${PREFIX}:single-line:v1`;
+export const EMPTY_PROJECTS_OPEN_KEY = `${PREFIX}:empty-projects-open:v1`;
+export const CARD_DETAILS_KEY = `${PREFIX}:card-details:v1`;
+export const HOVER_CARD_KEY = `${PREFIX}:hover-card:v1`;
+export const ROW_LAYOUT_KEY = `${PREFIX}:row-layout:v1`;
 export const GROUP_BY_KEY = `${PREFIX}:group-by:v1`;
 export const PROJECT_FILTER_KEY = `${PREFIX}:project-filter:v1`;
 
-/**
- * Which facts the metadata line under a title shows. Each is its own switch
- * so the line can be pared down to the one or two things a user scans for.
- */
-export interface RowDetails {
-  project: boolean;
-  branch: boolean;
-  machine: boolean;
-  model: boolean;
-  pullRequest: boolean;
-  agent: boolean;
-}
-
-const ROW_DETAIL_KEYS: readonly (keyof RowDetails)[] = [
-  "project",
-  "branch",
-  "machine",
-  "model",
-  "pullRequest",
+/** Which facts a row shows, in View options order. Each is its own switch. */
+export const ROW_DETAIL_KEYS = [
   "agent",
-];
+  "branch",
+  "project",
+  "pullRequest",
+  "jira",
+  "model",
+  "machine",
+  "modes",
+  "status",
+  "changes",
+] as const;
 
-const DEFAULT_ROW_DETAILS: RowDetails = {
-  project: true,
-  branch: true,
-  machine: true,
-  model: true,
-  pullRequest: true,
-  agent: true,
-};
+export type RowDetails = Record<(typeof ROW_DETAIL_KEYS)[number], boolean>;
 
-function readDetails(key: string): RowDetails {
+/** How much of a row shows: one line, a title plus a summary line, or all three lines. */
+export const ROW_LAYOUTS = ["single", "compact", "detailed"] as const;
+
+export type RowLayout = (typeof ROW_LAYOUTS)[number];
+
+/** The layout the two earlier single-line and compact-rows switches describe. */
+export function legacyRowLayout(): RowLayout {
   try {
-    const raw = window.localStorage.getItem(key);
-    if (raw === null) return DEFAULT_ROW_DETAILS;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return DEFAULT_ROW_DETAILS;
-    const next = { ...DEFAULT_ROW_DETAILS };
-    for (const detail of ROW_DETAIL_KEYS) {
-      const value = (parsed as Record<string, unknown>)[detail];
-      if (typeof value === "boolean") next[detail] = value;
-    }
-    return next;
+    if (window.localStorage.getItem(SINGLE_LINE_KEY) === "true") return "single";
+    return window.localStorage.getItem(COMPACT_ROWS_KEY) === "false" ? "detailed" : "compact";
   } catch {
-    return DEFAULT_ROW_DETAILS;
+    return "compact";
   }
 }
 
-/** The per-row detail switches, persisted as one object. */
-export function usePersistedDetails(
+/** What the hover card on a row shows, beyond its title and status. */
+export const CARD_DETAIL_KEYS = [
+  "summary",
+  "ask",
+  "attention",
+  "project",
+  "machine",
+  "branch",
+  "model",
+  "modes",
+  "queue",
+  "pullRequest",
+  "jira",
+  "nested",
+] as const;
+
+export type CardDetails = Record<(typeof CARD_DETAIL_KEYS)[number], boolean>;
+
+function readSwitches<K extends string>(key: string, keys: readonly K[]): Record<K, boolean> {
+  const next = Object.fromEntries(keys.map((name) => [name, true])) as Record<K, boolean>;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return next;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return next;
+    for (const name of keys) {
+      const value = (parsed as Record<string, unknown>)[name];
+      if (typeof value === "boolean") next[name] = value;
+    }
+    return next;
+  } catch {
+    return next;
+  }
+}
+
+/** A persisted set of named switches, each on by default. */
+export function usePersistedSwitches<K extends string>(
   key: string,
-): [RowDetails, (detail: keyof RowDetails, on: boolean) => void] {
-  const [value, setValue] = useState<RowDetails>(() => readDetails(key));
+  keys: readonly K[],
+): [
+  Record<K, boolean>,
+  (name: K, on: boolean) => void,
+  (next: Record<K, boolean>) => void,
+] {
+  const [value, setValue] = useState(() => readSwitches(key, keys));
   const set = useCallback(
-    (detail: keyof RowDetails, on: boolean) => {
+    (name: K, on: boolean) => {
       setValue((current) => {
-        if (current[detail] === on) return current;
-        const next = { ...current, [detail]: on };
-        try {
-          window.localStorage.setItem(key, JSON.stringify(next));
-        } catch {
-          // See writeSet.
-        }
+        if (current[name] === on) return current;
+        const next = { ...current, [name]: on };
+        writeJson(key, next);
         return next;
       });
     },
     [key],
   );
-  return [value, set];
+  const replace = useCallback(
+    (next: Record<K, boolean>) => {
+      writeJson(key, next);
+      setValue(next);
+    },
+    [key],
+  );
+  return [value, set, replace];
+}
+
+/** The per-row detail switches, persisted as one object. */
+export function usePersistedDetails(
+  key: string,
+): ReturnType<typeof usePersistedSwitches<keyof RowDetails>> {
+  return usePersistedSwitches(key, ROW_DETAIL_KEYS);
 }
 
 /** A persisted boolean, for view preferences with an on/off shape. */
@@ -132,6 +170,14 @@ function readSet(key: string): Set<string> {
     return new Set(parsed.filter((value): value is string => typeof value === "string"));
   } catch {
     return fallback();
+  }
+}
+
+function writeJson(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // See writeSet.
   }
 }
 

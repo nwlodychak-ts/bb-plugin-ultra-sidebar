@@ -23,15 +23,64 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { GroupBy } from "@/lib/sections";
-import type { RowDetails } from "@/hooks/useViewState";
+import {
+  CARD_DETAIL_KEYS,
+  ROW_DETAIL_KEYS,
+  ROW_LAYOUTS,
+  type CardDetails,
+  type RowDetails,
+  type RowLayout,
+} from "@/hooks/useViewState";
 
-const DETAIL_LABELS: ReadonlyArray<[keyof RowDetails, string]> = [
-  ["project", "Project"],
-  ["branch", "Branch"],
-  ["machine", "Machine"],
-  ["model", "Model"],
-  ["pullRequest", "Pull request"],
-  ["agent", "Agent"],
+const DETAIL_LABEL: Record<keyof RowDetails, string> = {
+  agent: "Agent",
+  branch: "Branch",
+  project: "Project",
+  pullRequest: "PR",
+  jira: "Jira",
+  model: "Model",
+  machine: "Machine",
+  modes: "Plan/goal",
+  status: "Status",
+  changes: "Changes",
+};
+
+const CARD_LABEL: Record<keyof CardDetails, string> = {
+  summary: "Summary",
+  ask: "Ask",
+  project: "Project",
+  machine: "Machine",
+  branch: "Branch",
+  model: "Model",
+  attention: "Attention",
+  modes: "Plan/goal",
+  queue: "Queue",
+  pullRequest: "PR",
+  jira: "Jira",
+  nested: "Nested",
+};
+
+const LAYOUT_LABEL: Record<RowLayout, string> = {
+  single: "Single line",
+  compact: "Compact",
+  detailed: "Detailed",
+};
+
+/** Facts on the line under the title, shown in compact rows. */
+const COMPACT_DETAILS: ReadonlySet<keyof RowDetails> = new Set([
+  "agent", "project", "pullRequest", "jira", "machine", "modes", "status", "changes",
+]);
+
+function only(...on: (keyof RowDetails)[]): RowDetails {
+  const details = {} as RowDetails;
+  for (const key of ROW_DETAIL_KEYS) details[key] = on.includes(key);
+  return details;
+}
+
+const PRESETS: ReadonlyArray<{ label: string; details: RowDetails; layout: RowLayout }> = [
+  { label: "Agent + title", details: only("agent"), layout: "single" },
+  { label: "Agent + branch", details: only("agent", "branch"), layout: "single" },
+  { label: "All", details: only(...ROW_DETAIL_KEYS), layout: "detailed" },
 ];
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -65,7 +114,7 @@ function Check({
   return (
     <label
       htmlFor={id}
-      className="flex cursor-pointer select-none items-center gap-2 text-xs text-foreground"
+      className="flex cursor-pointer select-none items-center gap-2 whitespace-nowrap text-xs text-foreground"
     >
       <Checkbox
         id={id}
@@ -83,12 +132,17 @@ export function ViewOptions({
   onOpenChange,
   groupBy,
   onGroupByChange,
-  compactRows,
-  onCompactRowsChange,
+  rowLayout,
+  onRowLayoutChange,
   projectIcons,
   onProjectIconsChange,
   rowDetails,
   onRowDetailChange,
+  onRowDetailsReplace,
+  hoverCard,
+  onHoverCardChange,
+  cardDetails,
+  onCardDetailChange,
   showArchived,
   onShowArchivedChange,
   onCollapseAll,
@@ -98,21 +152,25 @@ export function ViewOptions({
   onOpenChange?(open: boolean): void;
   groupBy: GroupBy;
   onGroupByChange(next: GroupBy): void;
-  compactRows: boolean;
-  onCompactRowsChange(next: boolean): void;
+  rowLayout: RowLayout;
+  onRowLayoutChange(next: RowLayout): void;
   projectIcons: boolean;
   onProjectIconsChange(next: boolean): void;
   rowDetails: RowDetails;
   onRowDetailChange(detail: keyof RowDetails, on: boolean): void;
+  onRowDetailsReplace(next: RowDetails): void;
+  hoverCard: boolean;
+  onHoverCardChange(next: boolean): void;
+  cardDetails: CardDetails;
+  onCardDetailChange(detail: keyof CardDetails, on: boolean): void;
   showArchived: boolean;
   onShowArchivedChange(next: boolean): void;
   onCollapseAll(): void;
   onExpandAll(): void;
 }) {
   const isLit = showArchived;
-  const visibleDetails = DETAIL_LABELS.filter(
-    ([detail]) =>
-      !compactRows || detail === "machine" || detail === "project",
+  const visibleDetails = ROW_DETAIL_KEYS.filter(
+    (detail) => rowLayout !== "compact" || COMPACT_DETAILS.has(detail),
   );
 
   return (
@@ -130,7 +188,7 @@ export function ViewOptions({
           <Icon name="SlidersHorizontal" className="size-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-64 p-3">
+      <PopoverContent align="start" className="w-72 p-3">
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-2">
             <Row label="Group by">
@@ -147,39 +205,57 @@ export function ViewOptions({
                 </SelectContent>
               </Select>
             </Row>
-
+            <Row label="Rows">
+              <Select
+                value={rowLayout}
+                onValueChange={(next) => {
+                  const layout = ROW_LAYOUTS.find((option) => option === next);
+                  if (layout !== undefined) onRowLayoutChange(layout);
+                }}
+              >
+                <SelectTrigger className="h-7 w-full text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ROW_LAYOUTS.map((layout) => (
+                    <SelectItem key={layout} value={layout}>{LAYOUT_LABEL[layout]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Row>
           </div>
 
           <div className="flex flex-col gap-1.5">
             <Heading>Layout</Heading>
-            <Check
-              id="view-compact-rows"
-              label="Compact rows"
-              checked={compactRows}
-              onChange={onCompactRowsChange}
-            />
-            <p className="text-[11px] leading-4 text-muted-foreground/70">
-              Keep branch, model, and other metadata in thread details.
-            </p>
-            <Check
-              id="view-project-icons"
-              label="Project icons"
-              checked={projectIcons}
-              onChange={onProjectIconsChange}
-            />
-            <p className="text-[11px] leading-4 text-muted-foreground/70">
-              Use each project's own icon or logo where it has one.
-            </p>
+            <div className="grid grid-cols-2 gap-x-2 gap-y-1.5">
+              <Check id="view-project-icons" label="Project icons" checked={projectIcons} onChange={onProjectIconsChange} />
+              <Check id="view-show-archived" label="Archived" checked={showArchived} onChange={onShowArchivedChange} />
+            </div>
           </div>
 
           <div className="flex flex-col gap-1.5">
             <Heading>Show on rows</Heading>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-              {visibleDetails.map(([detail, label]) => (
+            <div className="flex gap-1">
+              {PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => {
+                    onRowDetailsReplace(preset.details);
+                    onRowLayoutChange(preset.layout);
+                  }}
+                  className="flex-1 whitespace-nowrap rounded-md border border-border px-1 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-3 gap-x-2 gap-y-1.5">
+              {visibleDetails.map((detail) => (
                 <Check
                   key={detail}
                   id={`view-detail-${detail}`}
-                  label={label}
+                  label={DETAIL_LABEL[detail]}
                   checked={rowDetails[detail]}
                   onChange={(next) => onRowDetailChange(detail, next)}
                 />
@@ -188,14 +264,20 @@ export function ViewOptions({
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Heading>Include</Heading>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-              <Check
-                id="view-show-archived"
-                label="Archived"
-                checked={showArchived}
-                onChange={onShowArchivedChange}
-              />
+            <div className="flex items-center justify-between">
+              <Heading>Hover card</Heading>
+              <Check id="view-hover-card" label="Show" checked={hoverCard} onChange={onHoverCardChange} />
+            </div>
+            <div className={cn("grid grid-cols-3 gap-x-2 gap-y-1.5", !hoverCard && "hidden")}>
+              {CARD_DETAIL_KEYS.map((detail) => (
+                <Check
+                  key={detail}
+                  id={`view-card-${detail}`}
+                  label={CARD_LABEL[detail]}
+                  checked={cardDetails[detail]}
+                  onChange={(next) => onCardDetailChange(detail, next)}
+                />
+              ))}
             </div>
           </div>
 

@@ -58,14 +58,14 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("sidebar CLI pull request status", () => {
   it.each([
-    ["closed", "canceled"],
-    ["merged", "done"],
+    ["closed", "closed"],
+    ["merged", "merged"],
   ] as const)("updates the listed status when a PR is %s elsewhere", async (state, status) => {
     const now = vi.spyOn(Date, "now").mockReturnValue(0);
     const { harness, readPull } = await setup(pullRequest("open"));
     try {
       expect(await harness.behavior.runCli(["list", "--json"])).toMatchObject({
-        exitCode: 0, stdout: JSON.stringify(listedRow("in-review")),
+        exitCode: 0, stdout: JSON.stringify(listedRow("pull-request")),
       });
       readPull.mockResolvedValue(pullRequest(state));
       now.mockReturnValue(30_001);
@@ -78,40 +78,40 @@ describe("sidebar CLI pull request status", () => {
     }
   });
 
-  it("returns to in-review when a closed PR reopens elsewhere", async () => {
+  it("returns to pull-request when a closed PR reopens elsewhere", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(0);
     const { harness, readPull } = await setup(pullRequest("closed"));
     try {
       expect(await harness.behavior.runCli(["list", "--json"])).toMatchObject({
-        exitCode: 0, stdout: JSON.stringify(listedRow("canceled")),
+        exitCode: 0, stdout: JSON.stringify(listedRow("closed")),
       });
       readPull.mockResolvedValue(pullRequest("open"));
       now.mockReturnValue(30_001);
       expect(await harness.behavior.runCli(["list", "--json"])).toMatchObject({
-        exitCode: 0, stdout: JSON.stringify(listedRow("in-review")),
+        exitCode: 0, stdout: JSON.stringify(listedRow("pull-request")),
       });
     } finally {
       await harness.lifecycle.dispose();
     }
   });
 
-  it.each(["backlog", "done", "canceled"] as const)("preserves manual %s over the PR status", async status => {
+  it.each(["backlog", "done", "canceled"] as const)("lists the PR status over a manual %s", async status => {
     const { harness } = await setup(pullRequest("open"));
     try {
       expect(await harness.behavior.runCli(["status", status, "--thread", "thread"])).toMatchObject({ exitCode: 0 });
       expect(await harness.behavior.runCli(["list", "--json"])).toMatchObject({
-        exitCode: 0, stdout: JSON.stringify(listedRow(status)),
+        exitCode: 0, stdout: JSON.stringify(listedRow("pull-request")),
       });
     } finally {
       await harness.lifecycle.dispose();
     }
   });
 
-  it("keeps threads without a PR in progress", async () => {
+  it("files a stopped thread without a PR as complete", async () => {
     const { harness } = await setup({ outcome: "absent" });
     try {
       expect(await harness.behavior.runCli(["list", "--json"])).toMatchObject({
-        exitCode: 0, stdout: JSON.stringify(listedRow("in-progress")),
+        exitCode: 0, stdout: JSON.stringify(listedRow("complete")),
       });
     } finally {
       await harness.lifecycle.dispose();
@@ -135,7 +135,7 @@ describe("sidebar CLI pull request status", () => {
     try {
       await plugin(bb);
       expect(await harness.behavior.runCli(["list", "--json"])).toMatchObject({
-        exitCode: 0, stdout: JSON.stringify(listedRow("in-progress")),
+        exitCode: 0, stdout: JSON.stringify(listedRow("complete")),
       });
       expect(readPull).not.toHaveBeenCalled();
     } finally {

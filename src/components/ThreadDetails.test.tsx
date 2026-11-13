@@ -15,6 +15,8 @@ const harness = vi.hoisted(() => ({
   goal: vi.fn(),
   queue: undefined as QueueSummary | undefined,
   stack: null as PullRequestStackData | null,
+  card: {} as Record<string, boolean>,
+  jiraSite: null as string | null,
 }));
 vi.mock("@get-bb/plugin-sdk/app", () => {
   const rpc = { call: harness.goal };
@@ -27,6 +29,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => {
 vi.mock("./sidebar-context", () => ({
   useSidebar: () => ({
     artworkOf: () => null,
+    styleOf: () => null,
+    cardDetails: { project: true, machine: true, branch: true, model: true, attention: true, modes: true, queue: true, pullRequest: true, nested: true, ...harness.card },
+    jiraSite: harness.jiraSite,
     locationOf: () => ({ path: "/Users/test/src/bb", hostName: "mbp" }),
     openFolder: harness.openFolder,
     openThread: harness.openThread,
@@ -79,6 +84,8 @@ beforeEach(() => {
   harness.goal.mockReset().mockResolvedValue({ goal: null });
   harness.queue = undefined;
   harness.stack = null;
+  harness.card = {};
+  harness.jiraSite = null;
 });
 afterEach(cleanup);
 
@@ -162,6 +169,21 @@ describe("thread details", () => {
     expect(stack.querySelectorAll("a")).toHaveLength(2);
     fireEvent.click(stack.querySelector("a")!);
     expect(openThread).not.toHaveBeenCalled();
+  });
+
+  it("shows the summary, the agent's question with its options, and the ticket link", async () => {
+    harness.card = { summary: true, ask: true, jira: true };
+    harness.jiraSite = "https://acme.atlassian.net";
+    harness.goal.mockImplementation(async method => method === "threads.brief"
+      ? { about: "Fix the hover cards", latest: "Found the cause", asks: [{ prompt: "Which summary?", options: ["Thread text", "AI"] }] }
+      : { goal: null });
+    render(card({ node: node({ hasPendingInteraction: true, environment: { ...thread().environment!, branchName: "ABC-123-hover" } }) }));
+    expect(await screen.findByText("Which summary?")).toBeTruthy();
+    expect(screen.getByText("Thread text · AI")).toBeTruthy();
+    expect(screen.getByText("Fix the hover cards")).toBeTruthy();
+    expect(screen.getByText("Found the cause")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "ABC-123" }).getAttribute("href")).toBe("https://acme.atlassian.net/browse/ABC-123");
+    expect(harness.goal).toHaveBeenCalledWith("threads.brief", { threadId: "thread-tooltip" });
   });
 
   it("names the threads nested under the row and opens them", () => {

@@ -9,18 +9,25 @@ export type ProviderInfo = ReturnType<
   typeof experimental_useProviders
 >["providers"][number];
 import type { ItemRef } from "../lib/types";
-import type { RowDetails } from "../hooks/useViewState";
+import type { CardDetails, RowDetails, RowLayout } from "../hooks/useViewState";
 import type { EnvironmentLocation } from "../hooks/useEnvironmentLocations";
 import type { ProjectArtwork } from "../hooks/useProjectArtwork";
+import type { ProjectStyle } from "../lib/project-styles";
 import type { ManualStatus } from "../lib/status";
 import type { MoveOptions } from "../lib/move-targets";
 
 export interface SidebarContextValue {
   activeThreadId: string | null;
-  /** Keep idle rows on one line and move metadata into their details. */
-  compactRows: boolean;
+  /** One line, title plus summary line, or all three lines. */
+  rowLayout: RowLayout;
   /** Which badges the line under a title shows. */
   rowDetails: RowDetails;
+  /** Whether hovering a row opens its card. */
+  hoverCard: boolean;
+  /** Which sections the hover card shows. */
+  cardDetails: CardDetails;
+  /** The Jira site origin for ticket links, or null when none is set. */
+  jiraSite: string | null;
   /**
    * The host's name for a project, or "" when it no longer reports one or
    * the project is bb's implicit personal one, which rows do not name.
@@ -28,6 +35,12 @@ export interface SidebarContextValue {
   projectNameOf(projectId: string): string;
   /** A project's icon or logo, once found; null means the folder glyph. */
   artworkOf(projectId: string): ProjectArtwork | null;
+  /** The color and glyph set for a bb project id or folder project key. */
+  styleOf(projectKey: string): ProjectStyle | null;
+  /** The folder project key a thread files under, or null. */
+  folderKeyOf(thread: PluginSidebarThread): string | null;
+  /** Open the project editor. A folder key not yet saved starts a new folder project. */
+  editProject(projectKey: string): void;
   /** The checkout directory behind an environment, once it has been fetched. */
   locationOf(environmentId: string): EnvironmentLocation | null;
   /** Reveal an environment's folder in the file manager, when it is on this machine. */
@@ -48,7 +61,8 @@ export interface SidebarContextValue {
   /** Re-submit the turn that failed, the same as bb's own Retry. */
   retryThread(threadId: string): void;
   deleteThread(threadId: string): void;
-  newThreadIn(projectId: string): void;
+  /** Open a new thread in a bb project, or with no project for null. */
+  newThreadIn(projectId: string | null): void;
 
   /** Keyboard reorder: -1 moves earlier, 1 later, within the same section. */
   nudge(item: ItemRef, direction: -1 | 1): void;

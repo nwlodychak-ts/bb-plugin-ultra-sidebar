@@ -64,16 +64,24 @@ function ModeDetailsButton({ mode, threadTitle, compact, hideLabel, details, onO
   </span>;
 }
 
-export function ThreadModes({ thread, children, trailing, details, onDetailsOpenChange, compact = false }: {
+/** Plan, goal and queue glyphs alone, for a single-line row. */
+export function InlineModes({ thread }: { thread: PluginSidebarThread }) {
+  const modes = threadModes(thread, useThreadQueue(thread.id));
+  return modes.map(mode => <span key={mode.key} title={mode.detail} aria-label={mode.detail}
+    className={cn("inline-flex shrink-0 items-center", mode.tone)}><ModeIcon kind={mode.key} /></span>);
+}
+
+export function ThreadModes({ thread, children, trailing, details, onDetailsOpenChange, compact = false, showModes = true }: {
   thread: PluginSidebarThread;
   children?: ReactNode;
   trailing?: ReactNode;
   details?: ReactNode;
   onDetailsOpenChange?(open: boolean): void;
   compact?: boolean;
+  showModes?: boolean;
 }) {
   const queue = useThreadQueue(thread.id);
-  const modes = threadModes(thread, queue);
+  const modes = showModes ? threadModes(thread, queue) : [];
   const hasChildren = Children.toArray(children).length > 0;
   if (!modes.length && !hasChildren && !trailing) return null;
   return <span className={cn("bb-ws-summary grid min-w-0 w-full grid-cols-[minmax(0,1fr)_fit-content(60%)] items-start gap-x-2 pl-[42px] text-[11px]", !compact && "pb-0.5")} data-thread-summary="">

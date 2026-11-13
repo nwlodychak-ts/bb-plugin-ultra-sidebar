@@ -130,7 +130,7 @@ const LIVE_INDICATORS = new Set([
  * `wakesEarly`: a thread waiting on a person is not working, and a collapsed
  * parent says those two things differently.
  */
-function isWorking(thread: PluginSidebarThread): boolean {
+export function isWorking(thread: PluginSidebarThread): boolean {
   if (thread.hasPendingInteraction) return false;
   if (LIVE_INDICATORS.has(thread.indicator)) return true;
   const activity = thread.activity;

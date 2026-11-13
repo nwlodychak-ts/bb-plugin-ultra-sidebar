@@ -16,12 +16,13 @@ import { z } from "zod";
 import { createStore, MIGRATIONS, type Store } from "./lib/store.server";
 import { placeItem, toPlacement } from "./lib/order";
 import { SIDEBAR_CHANGED, type ItemKind, type Placement } from "./lib/types";
-import { isManualStatus, statusBucket } from "./lib/status";
+import { isBusy, isManualStatus, statusBucket } from "./lib/status";
 import { summarizeQueue } from "./lib/thread-queue";
 import { createScheduledTasksActions, createScheduledTasksReader, scheduledTaskRefSchema, scheduledTasksResultSchema } from "./lib/scheduled-tasks.server";
 import { createThreadDiffReader, threadDiffSchema } from "./lib/thread-diffs.server";
 import { createPullRequestBindings, createPullRequestReader } from "./lib/pull-requests.server";
 import { createWorkflowAgentsReader, workflowAgentsResultSchema } from "./lib/workflow-agents.server";
+import { briefOf, threadBriefSchema } from "./lib/thread-brief";
 import { ProjectIconCache } from "./lib/project-artwork-cache";
 import { findProjectArtwork, type ProjectArtwork } from "./lib/project-artwork.server";
 
@@ -114,6 +115,14 @@ export const rpcContract = defineRpcContract({
   "threads.diffs": {
     input: z.object({ threads: z.array(z.object({ threadId: z.string(), environmentId: z.string() })).min(1).max(300) }),
     output: z.object({ entries: z.array(threadDiffSchema) }),
+  },
+  "threads.brief": {
+    input: z.object({ threadId: z.string().min(1) }),
+    output: threadBriefSchema,
+  },
+  "jira.site": {
+    input: z.null(),
+    output: z.string().nullable(),
   },
   "threads.goal": {
     input: z.object({ threadId: z.string().min(1) }),
@@ -263,6 +272,14 @@ export const rpcContract = defineRpcContract({
 });
 
 export default async function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define({
+    jiraSite: {
+      type: "string",
+      label: "Jira site",
+      description: "Host name for ticket links, such as acme.atlassian.net. Empty hides them.",
+      default: "",
+    },
+  });
   const scheduledTasks = createScheduledTasksReader(bb.sdk.plugins);
   const workflowAgents = createWorkflowAgentsReader(bb.sdk.plugins);
   const scheduledTaskActions = createScheduledTasksActions(bb.sdk.plugins, scheduledTasks.invalidate);
@@ -380,6 +397,17 @@ export default async function plugin(bb: BbPluginApi) {
     "threads.plan": async ({ threadId }) => ({
       plan: (await bb.sdk.threads.timeline({ threadId, segmentLimit: "1", summaryOnly: "true" })).activePromptMode,
     }),
+    "threads.brief": async ({ threadId }) => {
+      const [outline, interactions] = await Promise.all([
+        bb.sdk.threads.conversationOutline({ threadId }),
+        bb.sdk.threads.interactions.list({ threadId }),
+      ]);
+      return briefOf(outline, interactions);
+    },
+    "jira.site": async () => {
+      const site = (await settings.get()).jiraSite.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      return site === "" ? null : `https://${site}`;
+    },
     "threads.goal": async ({ threadId }) => ({
       goal: (await bb.sdk.threads.timeline({ threadId, segmentLimit: "1", summaryOnly: "true" })).goal,
     }),
@@ -751,10 +779,7 @@ export default async function plugin(bb: BbPluginApi) {
               threadId: thread.id,
               projectId: thread.projectId,
               title: thread.title,
-              status: statusBucket(
-                statusById.get(thread.id)?.status ?? null,
-                pullsById.get(thread.id),
-              ),
+              status: statusBucket(pullsById.get(thread.id), { working: isBusy(thread.status) }),
               snoozedUntil: statusById.get(thread.id)?.snoozedUntil ?? null,
               sortIndex: orderById.get(thread.id) ?? null,
             }));

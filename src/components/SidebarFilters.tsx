@@ -4,21 +4,29 @@ import { cn } from "@/lib/utils";
 import { Icon } from "./ui/icon";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "./ui/command";
+import { ProjectIcon } from "./ProjectIcon";
 
 const triggerClass = "flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export function SidebarFilters({
   projects,
+  folderProjects,
   projectIds,
   onProjectsChange,
+  onNewFolderProject,
 }: {
   projects: readonly PluginSidebarProject[];
+  /** Folder projects by project key. */
+  folderProjects: readonly { key: string; name: string }[];
   projectIds: readonly string[];
   onProjectsChange(projectIds: readonly string[]): void;
+  onNewFolderProject(): void;
 }) {
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const folderOptions = folderProjects.map(({ key, name }) => ({ id: key, name }));
+  const options = [...folderOptions, ...projects];
   const projectName = projectIds.length === 1
-    ? projects.find(project => project.id === projectIds[0])?.name ?? "1 project"
+    ? options.find(project => project.id === projectIds[0])?.name ?? "1 project"
     : projectIds.length > 1 ? `${projectIds.length} projects` : "All projects";
 
   return <div className="flex min-w-0 flex-1 items-center gap-0.5" data-sidebar-filters="">
@@ -44,8 +52,10 @@ export function SidebarFilters({
                 {projectIds.length === 0 && <Icon name="Check" aria-hidden />}
               </CommandItem>
             </CommandGroup>
-            <CommandGroup heading="Projects">
-              {projects.map(project => {
+            {[["Folder projects", folderOptions] as const,
+              ["Projects", projects] as const].map(([heading, list]) => list.length === 0 ? null :
+            <CommandGroup key={heading} heading={heading}>
+              {list.map(project => {
                 const checked = projectIds.includes(project.id);
                 return <CommandItem key={project.id} value={project.id} keywords={[project.name]}
                   aria-checked={checked}
@@ -53,9 +63,17 @@ export function SidebarFilters({
                   <span aria-hidden className={cn("flex size-4 shrink-0 items-center justify-center rounded border border-border", checked && "border-primary bg-primary text-primary-foreground")}>
                     {checked && <Icon name="Check" className="size-3" />}
                   </span>
+                  <ProjectIcon projectId={project.id} className="size-3.5 opacity-80" />
                   <span className="min-w-0 flex-1 truncate">{project.name}</span>
                 </CommandItem>;
               })}
+            </CommandGroup>)}
+            <CommandGroup>
+              <CommandItem value="new-folder-project" keywords={["New folder project"]}
+                onSelect={() => { setProjectsOpen(false); onNewFolderProject(); }}>
+                <Icon name="Plus" aria-hidden />
+                <span className="flex-1">New folder project…</span>
+              </CommandItem>
             </CommandGroup>
           </CommandList>
         </Command>

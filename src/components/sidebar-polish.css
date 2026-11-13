@@ -43,9 +43,6 @@
 
 .bb-ws-toolbar { container-type: inline-size; }
 .bb-ws-toolbar > button { flex-shrink: 0; }
-@container (max-width: 360px) {
-  .bb-ws-new-thread-label { display: none; }
-}
 
 /* The dock under the list: scheduled automations and snoozed threads. Empty
    sections render nothing, so an empty dock takes no space at all. */

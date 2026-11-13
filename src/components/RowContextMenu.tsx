@@ -21,21 +21,10 @@ import {
 import { Icon } from "@/components/ui/icon";
 import type { ItemRef } from "@/lib/types";
 import type { Section } from "@/lib/sections";
-import { STATUS_BUCKETS, canFileInto, type ManualStatus } from "@/lib/status";
+import { canFileInto, type ManualStatus } from "@/lib/status";
 import { useSidebar } from "./sidebar-context";
-import { StatusIcon } from "./StatusIcon";
+import { useSidebarSelection } from "./SidebarInteractions";
 import { MoveThreadDialog } from "./MoveThreadDialog";
-
-const STATUS_CHOICES = STATUS_BUCKETS.filter((bucket) =>
-  canFileInto(bucket.key),
-).map((bucket) => ({
-  key: bucket.key,
-  label: bucket.label,
-  // In progress is the absence of a manual status, not one of its own.
-  value: (bucket.key === "in-progress"
-    ? null
-    : bucket.key) as ManualStatus | null,
-}));
 
 const SNOOZE_CHOICES = [
   { label: "For an hour", ms: 60 * 60 * 1000 },
@@ -109,6 +98,13 @@ export function RowContextMenu({
   onRename(): void;
 }) {
   const sidebar = useSidebar();
+  const selection = useSidebarSelection();
+  /** Runs an action on every selected thread when this row is selected, else on this row. */
+  const each = (label: string, action: (id: string) => void) => {
+    if (selection.selected.size < 2 || !selection.selected.has(thread.id)) return action(thread.id);
+    selection.batch(label, () => selection.selected.forEach((id) => action(id)));
+    selection.exit();
+  };
   // Radix returns focus to the trigger when the menu closes. For every item
   // but Rename that is what we want; for Rename it blurs the input that just
   // opened, which commits an empty edit and closes it again.
@@ -171,7 +167,7 @@ export function RowContextMenu({
               spawned it, so the Pinned list would never show it and the
               action would be a silent no-op. */}
           {thread.parentThreadId === null && (
-            <ContextMenuItem onSelect={() => sidebar.setPinned(thread.id, !thread.isPinned)}>
+            <ContextMenuItem onSelect={() => each("Pins changed", (id) => sidebar.setPinned(id, !thread.isPinned))}>
               <Icon name={thread.isPinned ? "PinOff" : "Pin"} />
               {thread.isPinned ? "Unpin from top" : "Pin to top"}
               <ContextMenuShortcut>P</ContextMenuShortcut>
@@ -184,41 +180,20 @@ export function RowContextMenu({
           />
           <ContextMenuSub>
             <ContextMenuSubTrigger>
-              <Icon name="CircleCheck" />Status
-            </ContextMenuSubTrigger>
-            <ContextMenuSubContent className="w-44">
-              <ContextMenuGroup aria-label="Thread status">
-                {/* In review follows the pull request; In progress clears the manual choice. */}
-                {STATUS_CHOICES.map((choice) => (
-                  <ContextMenuItem
-                    key={choice.key}
-                    disabled={manualStatus === choice.value}
-                    onSelect={() => sidebar.setStatus(thread.id, choice.value)}
-                  >
-                    <StatusIcon tone={choice.key} />
-                    {choice.label}
-                    {choice.key === "done" && <ContextMenuShortcut>D</ContextMenuShortcut>}
-                  </ContextMenuItem>
-                ))}
-              </ContextMenuGroup>
-            </ContextMenuSubContent>
-          </ContextMenuSub>
-          <ContextMenuSub>
-            <ContextMenuSubTrigger>
               <Icon name="Clock" />Snooze
               <ContextMenuShortcut>S</ContextMenuShortcut>
             </ContextMenuSubTrigger>
             <ContextMenuSubContent className="w-48">
               <ContextMenuGroup aria-label="Snooze duration">
                 {SNOOZE_CHOICES.map((choice) => (
-                  <ContextMenuItem key={choice.label} onSelect={() => sidebar.setSnoozed(thread.id, Date.now() + choice.ms)}>
+                  <ContextMenuItem key={choice.label} onSelect={() => each("Threads snoozed", (id) => sidebar.setSnoozed(id, Date.now() + choice.ms))}>
                     <Icon name="Clock" />{choice.label}
                   </ContextMenuItem>
                 ))}
               </ContextMenuGroup>
               <ContextMenuSeparator />
               <ContextMenuGroup>
-                <ContextMenuItem onSelect={() => sidebar.setSnoozed(thread.id, null)}>
+                <ContextMenuItem onSelect={() => each("Threads woken", (id) => sidebar.setSnoozed(id, null))}>
                   <Icon name="Play" />Wake now
                 </ContextMenuItem>
               </ContextMenuGroup>
@@ -238,8 +213,9 @@ export function RowContextMenu({
         </ContextMenuGroup>
         <ContextMenuSeparator />
         <ContextMenuGroup aria-label="Remove thread">
-          <ContextMenuItem onSelect={() => sidebar.archiveThread(thread.id)}>
-            <Icon name="Archive" />Archive
+          <ContextMenuItem onSelect={() => each("Marked done", (id) => sidebar.setStatus(id, "done"))}>
+            <Icon name="Archive" />Done and archive
+            <ContextMenuShortcut>D</ContextMenuShortcut>
           </ContextMenuItem>
           <ContextMenuItem variant="destructive" onSelect={() => sidebar.deleteThread(thread.id)}>
             <Icon name="Trash2" />Delete
@@ -264,29 +240,38 @@ export function SectionContextMenu({
   section: Section;
 }) {
   const sidebar = useSidebar();
-  const projectId = section.projectId;
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild onContextMenu={(event) => event.stopPropagation()}>
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent className="w-56">
-        {projectId !== null && (
+        {section.kind === "folder" && (
+          <ContextMenuGroup>
+            <ContextMenuItem onSelect={() => sidebar.editProject(section.projectId)}>
+              <Icon name="Edit" />Edit folder project…
+            </ContextMenuItem>
+          </ContextMenuGroup>
+        )}
+        {section.kind === "project" && (
           <>
             <ContextMenuGroup>
-              <ContextMenuItem onSelect={() => sidebar.newThreadIn(projectId)}>
+              <ContextMenuItem onSelect={() => sidebar.newThreadIn(section.projectId)}>
                 <Icon name="MessageSquarePlus" />New thread here
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => sidebar.editProject(section.projectId)}>
+                <Icon name="Edit" />Color and glyph…
               </ContextMenuItem>
             </ContextMenuGroup>
             <ContextMenuSeparator />
             <ContextMenuGroup aria-label="Order projects">
               <ContextMenuItem
-                onSelect={() => sidebar.nudge({ kind: "project", refId: projectId }, -1)}
+                onSelect={() => sidebar.nudge({ kind: "project", refId: section.projectId }, -1)}
               >
                 <Icon name="ArrowUp" />Move project up
               </ContextMenuItem>
               <ContextMenuItem
-                onSelect={() => sidebar.nudge({ kind: "project", refId: projectId }, 1)}
+                onSelect={() => sidebar.nudge({ kind: "project", refId: section.projectId }, 1)}
               >
                 <Icon name="ArrowDown" />Move project down
               </ContextMenuItem>
@@ -302,10 +287,10 @@ export function SectionContextMenu({
         )}
         {/* The one heading nothing can be dropped on, so it says why rather
             than leaving a dead target to be discovered by trying. */}
-        {section.bucket !== null && !canFileInto(section.bucket) && (
+        {section.kind === "status" && !canFileInto(section.bucket) && (
           <ContextMenuGroup>
             <ContextMenuItem disabled>
-              <Icon name="Info" />In review follows the pull request
+              <Icon name="Info" />Set by the thread and its pull request
             </ContextMenuItem>
           </ContextMenuGroup>
         )}

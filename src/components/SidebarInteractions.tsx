@@ -30,7 +30,6 @@ import {
 } from "./ui/dialog";
 import { useSidebar } from "./sidebar-context";
 import { tomorrowMorning } from "./tomorrow-morning";
-import { isFinished, isStatusBucket } from "../lib/status";
 import type { UndoHistory } from "../lib/history";
 
 const ROW = "[data-sidebar-thread-shortcut-target]";
@@ -49,6 +48,7 @@ const Selection = createContext<{
   exit(): void;
   click(id: string, event: MouseEvent): boolean;
   toggle(id: string, range?: boolean): void;
+  batch(label: string, action: () => void): void;
 }>({
   selected: new Set<string>(),
   active: false,
@@ -56,6 +56,7 @@ const Selection = createContext<{
   exit: () => {},
   click: (_id: string, _event: MouseEvent) => false,
   toggle: () => {},
+  batch: (_label: string, action: () => void) => action(),
 });
 export const useSidebarSelection = () => useContext(Selection);
 
@@ -92,7 +93,7 @@ const shortcuts = [
   ["Enter", "Open thread"],
   ["Shift Enter", "Open thread in split"],
   ["F2", "Rename focused thread"],
-  ["D", "Mark done / reopen"],
+  ["D", "Mark done and archive"],
   ["P", "Pin selected threads to the top"],
   ["S", "Snooze selected threads until tomorrow at 9am"],
   ["← / →", "Collapse / expand subagents, or step to parent / child"],
@@ -429,10 +430,8 @@ export function SidebarInteractions({
         sidebar.openThread(id, true);
         handled();
       } else if (key === "d") {
-        // Reverses on a thread that is already finished, exactly as the
-        // row's own button does.
-        const bucket = row.dataset.sidebarBucket;
-        status(targets(id), isStatusBucket(bucket) && isFinished(bucket));
+        // Done archives, the same as the row's own button.
+        status(targets(id), false);
         handled();
       } else if (key === "s") {
         snooze(targets(id));
@@ -456,7 +455,7 @@ export function SidebarInteractions({
   };
 
   return (
-    <Selection.Provider value={{ selected, active, enter, exit, click, toggle }}>
+    <Selection.Provider value={{ selected, active, enter, exit, click, toggle, batch }}>
       <ContextMenu>
       <ContextMenuTrigger asChild>
       <SidebarSurface
@@ -535,18 +534,6 @@ export function SidebarInteractions({
                   >
                     <Icon name="PinOff" />
                     Unpin
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="justify-start"
-                    onClick={() => {
-                      setActionsOpen(false);
-                      status(targets(), true);
-                    }}
-                  >
-                    <Icon name="Spinner" />
-                    Reopen
                   </Button>
                   <Button
                     size="sm"

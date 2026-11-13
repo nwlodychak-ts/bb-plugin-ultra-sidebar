@@ -25,8 +25,8 @@ const thread = (sectionId: string, projectId = "p1"): DragSource => ({
 
 const p1 = projectSectionId("p1");
 const p2 = projectSectionId("p2");
-const done = statusSectionId("done");
-const backlog = statusSectionId("backlog");
+const done = statusSectionId("merged");
+const progress = statusSectionId("in-progress");
 
 /** Every drop that leaves the order alone and nothing else. */
 const justOrder = { reorder: true, pin: null, bucket: null };
@@ -50,21 +50,15 @@ describe("resolveDrop inside one section", () => {
 });
 
 describe("resolveDrop across sections", () => {
-  it("files a thread into another bucket, from a row or the heading", () => {
-    expect(resolveDrop(thread(done), zone("thread", "t2", backlog))).toEqual({
-      sectionId: backlog,
+  it("files a thread into In progress and refuses Merged", () => {
+    expect(resolveDrop(thread(done), zone("thread", "t2", progress))).toEqual({
+      sectionId: progress,
       anchorRefId: "t2",
       reorder: false,
       pin: null,
-      bucket: "backlog",
+      bucket: "in-progress",
     });
-    expect(resolveDrop(thread(p1), zone("section", done, done))).toEqual({
-      sectionId: done,
-      anchorRefId: null,
-      reorder: false,
-      pin: null,
-      bucket: "done",
-    });
+    expect(resolveDrop(thread(p1), zone("section", done, done))).toBeNull();
   });
 
   it("pins a thread dropped on the Pinned list", () => {
@@ -88,12 +82,12 @@ describe("resolveDrop across sections", () => {
       pin: false,
       bucket: null,
     });
-    expect(resolveDrop(pinned, zone("thread", "t2", done))).toEqual({
-      sectionId: done,
+    expect(resolveDrop(pinned, zone("thread", "t2", progress))).toEqual({
+      sectionId: progress,
       anchorRefId: "t2",
       reorder: false,
       pin: false,
-      bucket: "done",
+      bucket: "in-progress",
     });
   });
 
@@ -122,8 +116,8 @@ describe("resolveDrop across sections", () => {
   // In review is a fact about a pull request, so the drop has to be refused
   // outright. Accepting it would clear the manual status instead, and the row
   // would appear to land and then settle under In progress.
-  it("refuses In review, the one bucket a drag cannot bring about", () => {
-    const review = statusSectionId("in-review");
+  it("refuses Pull request, a bucket a drag cannot bring about", () => {
+    const review = statusSectionId("pull-request");
     for (const target of [
       zone("section", review, review),
       zone("thread", "t2", review),
@@ -172,7 +166,7 @@ describe("hoverKeys", () => {
   it("rings the section and lines the row for a filing", () => {
     expect(
       hoverKeys(
-        { sectionId: done, anchorRefId: "t2", reorder: false, pin: null, bucket: "done" },
+        { sectionId: done, anchorRefId: "t2", reorder: false, pin: null, bucket: "in-progress" },
         zone("thread", "t2", done),
         "after",
       ),
@@ -196,11 +190,11 @@ describe("hoverKeys", () => {
 describe("sortableId", () => {
   it("is unique per list, including one thread across two groupings", () => {
     expect(sortableId(zone("thread", "t1", p1))).toBe("thread:project:p1:t1");
-    expect(sortableId(zone("thread", "t1", done))).toBe("thread:status:done:t1");
+    expect(sortableId(zone("thread", "t1", done))).toBe("thread:status:merged:t1");
     expect(sortableId(zone("project", "p1", p1))).toBe("project:p1");
-    expect(sortableId(zone("section", done, done))).toBe("section:status:done");
+    expect(sortableId(zone("section", done, done))).toBe("section:status:merged");
     // The inert heading node a status or Pinned section registers.
-    expect(sortableId(zone("project", null, done))).toBe("project:status:done");
+    expect(sortableId(zone("project", null, done))).toBe("project:status:merged");
     expect(sortableId(zone("project", null, PINNED_SECTION_ID))).toBe(
       "project:pinned",
     );

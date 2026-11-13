@@ -97,13 +97,19 @@ const projects = [
 
 const state: SidebarState = { revision: 1, order: [], lifecycle: [], prompts: [] };
 
-describe("PR outcome labels", () => {
+/** The status section id a row sits under. */
+function sectionOfRow(slot: { container: HTMLElement }, threadId: string): string | null {
+  return slot.container.querySelector(`[data-sidebar-thread-id="${threadId}"]`)
+    ?.closest("section")?.querySelector("[data-sidebar-section-id]")?.getAttribute("data-sidebar-section-id") ?? null;
+}
+
+describe("PR outcome sections", () => {
   it.each([
-    { state: "closed", label: "Closed", bucket: "Canceled", compact: false },
-    { state: "closed", label: "Closed", bucket: "Canceled", compact: true },
-    { state: "merged", label: "Merged", bucket: "Done", compact: false },
-    { state: "merged", label: "Merged", bucket: "Done", compact: true },
-  ])("shows $label in $bucket with compact=$compact", async outcome => {
+    { state: "closed", bucket: "Closed", glyph: "closed", compact: false },
+    { state: "closed", bucket: "Closed", glyph: "closed", compact: true },
+    { state: "merged", bucket: "Merged", glyph: "merged", compact: false },
+    { state: "merged", bucket: "Merged", glyph: "merged", compact: true },
+  ])("files a $state PR under $bucket with compact=$compact", async outcome => {
     const slot = await mount({
       compact: outcome.compact,
       threads: [thread({
@@ -123,11 +129,12 @@ describe("PR outcome labels", () => {
       },
     });
     await slot.findByRole("button", { name: `Collapse ${outcome.bucket}` });
-    expect(await slot.findByText(outcome.label)).toBeTruthy();
+    const row = slot.container.querySelector('[data-sidebar-thread-id="pr-thread"]')!;
+    expect(row.querySelector(`[data-bucket-glyph="${outcome.glyph}"]`)).not.toBeNull();
     expect(slot.queryByText("Ready")).toBeNull();
   });
 
-  it("updates the visible label and section after external close, reopen, and merge", async () => {
+  it("moves the row between sections after external close, reopen, and merge", async () => {
     let remoteState: "open" | "closed" | "merged" = "open";
     const slot = await mount({
       mode: "status",
@@ -148,30 +155,19 @@ describe("PR outcome labels", () => {
         }] }),
       },
     });
-    const ready = await slot.findByText("Ready");
-    expect(ready.closest("section")?.querySelector("[data-sidebar-section-id]")?.getAttribute("data-sidebar-section-id"))
-      .toBe("status:in-review");
+    await waitFor(() => expect(sectionOfRow(slot, "pr-thread")).toBe("status:pull-request"));
 
     remoteState = "closed";
     fireEvent.focus(window);
-    const closed = await slot.findByText("Closed");
-    expect(closed.closest("section")?.querySelector("[data-sidebar-section-id]")?.getAttribute("data-sidebar-section-id"))
-      .toBe("status:canceled");
-    expect(slot.queryByText("Ready")).toBeNull();
+    await waitFor(() => expect(sectionOfRow(slot, "pr-thread")).toBe("status:closed"));
 
     remoteState = "open";
     fireEvent.focus(window);
-    const reopened = await slot.findByText("Ready");
-    expect(reopened.closest("section")?.querySelector("[data-sidebar-section-id]")?.getAttribute("data-sidebar-section-id"))
-      .toBe("status:in-review");
-    expect(slot.queryByText("Closed")).toBeNull();
+    await waitFor(() => expect(sectionOfRow(slot, "pr-thread")).toBe("status:pull-request"));
 
     remoteState = "merged";
     fireEvent.focus(window);
-    const merged = await slot.findByText("Merged");
-    expect(merged.closest("section")?.querySelector("[data-sidebar-section-id]")?.getAttribute("data-sidebar-section-id"))
-      .toBe("status:done");
-    expect(slot.queryByText("Ready")).toBeNull();
+    await waitFor(() => expect(sectionOfRow(slot, "pr-thread")).toBe("status:merged"));
   });
 });
 
@@ -212,6 +208,7 @@ async function mount(options: {
         threads: options.threads,
         projects: options.projects ?? projects,
       },
+      sdk: { threads: { archive: async ({ threadId }) => ({ ok: true, archivedThreadIds: [threadId] }) } },
       rpc: {
         "threads.title": input => options.threads.find(t => t.id === (input as {threadId:string}).threadId)?.title ?? null,
         "threads.restoreTitle": () => null,
@@ -331,6 +328,7 @@ describe("ultra sidebar thread list", () => {
         thread({ id: "deep-active", projectId: "p1", parentThreadId: "deep-parent" }),
       ];
       const slot = await mount({
+        mode: "status",
         activeThreadId: "done-0",
         threads: [...roots, ...descendants],
         sidebarState: { ...state, lifecycle: roots.map(root => ({ threadId: root.id, status: "done", snoozedUntil: null })) },
@@ -338,7 +336,7 @@ describe("ultra sidebar thread list", () => {
       const scroller = slot.container.querySelector<HTMLElement>(".bb-ws-scroll");
       if (scroller === null) throw new Error("Missing sidebar scroller");
       expect(scroller.clientHeight).toBe(300);
-      const done = heading(slot, "Done");
+      const done = heading(slot, "Complete");
       const expectFlow = (count: number) => {
         const rows = done.querySelectorAll("[data-sidebar-thread-depth='0']");
         expect(rows).toHaveLength(count);
@@ -369,12 +367,12 @@ describe("ultra sidebar thread list", () => {
       fireEvent.click(slot.getByRole("button", { name: "Collapse subagents of done-1" }));
       expect(scroller.scrollTop).toBe(400);
       expect(scrollIntoView).not.toHaveBeenCalled();
-      fireEvent.click(within(done).getByRole("button", { name: "Collapse Done" }));
-      fireEvent.click(within(done).getByRole("button", { name: "Expand Done" }));
+      fireEvent.click(within(done).getByRole("button", { name: "Collapse Complete" }));
+      fireEvent.click(within(done).getByRole("button", { name: "Expand Complete" }));
       expectFlow(25);
       expect(scroller.scrollTop).toBe(400);
       expect(scrollIntoView).not.toHaveBeenCalled();
-      fireEvent.click(within(done).getByRole("button", { name: "Load 25 more threads in Done" }));
+      fireEvent.click(within(done).getByRole("button", { name: "Load 25 more threads in Complete" }));
       expectFlow(50);
       expect(scroller.scrollTop).toBe(400);
       expect(scrollIntoView).not.toHaveBeenCalled();
@@ -394,7 +392,7 @@ describe("ultra sidebar thread list", () => {
     }
   });
 
-  it("previews 25 of 619 Done roots, explicitly loads more, and resets on show-less or collapse", async () => {
+  it("previews 25 of 619 roots, explicitly loads more, and resets on show-less or collapse", async () => {
     const roots = Array.from({ length: 619 }, (_, index) => thread({
       id: `done-${index}`, projectId: "p1", createdAt: 619 - index,
       environment: { id: `env-${index}`, name: "checkout", branchName: null, providerId: null, workspaceDisplayKind: null, path: null, isWorktree: null },
@@ -402,8 +400,8 @@ describe("ultra sidebar thread list", () => {
     const lifecycle = roots.map(root => ({ threadId: root.id, status: "done" as const, snoozedUntil: null }));
     const execution = vi.fn(() => ({ entries: [] }));
     const diffs = vi.fn(() => ({ entries: [] }));
-    const slot = await mount({ threads: roots, sidebarState: { ...state, lifecycle }, rpc: { "threads.execution": execution, "threads.diffs": diffs } });
-    const done = heading(slot, "Done");
+    const slot = await mount({ mode: "status", threads: roots, sidebarState: { ...state, lifecycle }, rpc: { "threads.execution": execution, "threads.diffs": diffs } });
+    const done = heading(slot, "Complete");
     const rows = () => done.querySelectorAll("[data-sidebar-thread-id]");
     expect(rows()).toHaveLength(25);
     expect(within(done).getByText("619")).toBeTruthy();
@@ -416,32 +414,33 @@ describe("ultra sidebar thread list", () => {
     fireEvent.keyDown(firstRow, { key: "a", ctrlKey: true });
     expect(done.querySelectorAll('[data-selected="true"]')).toHaveLength(25);
     fireEvent.keyDown(firstRow, { key: "Escape" });
-    const load = within(done).getByRole("button", { name: "Load 25 more threads in Done" });
+    const load = within(done).getByRole("button", { name: "Load 25 more threads in Complete" });
     expect(load.textContent).toContain("594 remaining");
     fireEvent.click(load);
     expect(rows()).toHaveLength(50);
     expect(load.textContent).toContain("569 remaining");
     await waitFor(() => expect(execution).toHaveBeenCalledWith({ threadIds: roots.slice(25, 50).map(root => root.id) }));
-    fireEvent.click(within(done).getByRole("button", { name: "Show fewer threads in Done" }));
+    fireEvent.click(within(done).getByRole("button", { name: "Show fewer threads in Complete" }));
     expect(rows()).toHaveLength(25);
-    expect(document.activeElement).toBe(within(done).getByRole("button", { name: "Collapse Done" }));
+    expect(document.activeElement).toBe(within(done).getByRole("button", { name: "Collapse Complete" }));
     fireEvent.click(load);
     expect(rows()).toHaveLength(50);
-    fireEvent.click(within(done).getByRole("button", { name: "Collapse Done" }));
+    fireEvent.click(within(done).getByRole("button", { name: "Collapse Complete" }));
     expect(rows()).toHaveLength(0);
-    fireEvent.click(within(done).getByRole("button", { name: "Expand Done" }));
+    fireEvent.click(within(done).getByRole("button", { name: "Expand Complete" }));
     expect(rows()).toHaveLength(25);
-    expect(within(done).queryByRole("button", { name: "Show fewer threads in Done" })).toBeNull();
+    expect(within(done).queryByRole("button", { name: "Show fewer threads in Complete" })).toBeNull();
   });
 
   it("keeps a late active descendant discoverable without loading the preceding 600 roots", async () => {
     const roots = Array.from({ length: 619 }, (_, index) => thread({ id: `done-${index}`, projectId: "p1", createdAt: 619 - index }));
     const child = thread({ id: "palette-match", projectId: "p1", parentThreadId: "done-618", title: "Late search result" });
     const slot = await mount({
+      mode: "status",
       activeThreadId: child.id, threads: [...roots, child],
       sidebarState: { ...state, lifecycle: roots.map(root => ({ threadId: root.id, status: "done", snoozedUntil: null })) },
     });
-    const done = heading(slot, "Done");
+    const done = heading(slot, "Complete");
     expect(done.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(27);
     expect(slot.getByText("Late search result").closest("[data-sidebar-thread-id]")?.getAttribute("aria-current")).toBe("page");
     expect(slot.queryByText("done-617")).toBeNull();
@@ -455,21 +454,21 @@ describe("ultra sidebar thread list", () => {
     Element.prototype.scrollIntoView = vi.fn();
     try {
     const roots = Array.from({ length: 60 }, (_, index) => thread({ id: `done-${index}`, projectId: index % 2 ? "p2" : "p1", createdAt: 60 - index }));
-    const slot = await mount({ threads: roots, sidebarState: { ...state, lifecycle: roots.map(root => ({ threadId: root.id, status: "done", snoozedUntil: null })) } });
-    fireEvent.click(slot.getByRole("button", { name: "Load 25 more threads in Done" }));
-    expect(heading(slot, "Done").querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(50);
+    const slot = await mount({ mode: "status", threads: roots, sidebarState: { ...state, lifecycle: roots.map(root => ({ threadId: root.id, status: "done", snoozedUntil: null })) } });
+    fireEvent.click(slot.getByRole("button", { name: "Load 25 more threads in Complete" }));
+    expect(heading(slot, "Complete").querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(50);
     fireEvent.click(slot.getByRole("button", { name: "Filter by project: All projects" }));
     fireEvent.click(await slot.findByRole("option", { name: "Beta" }));
     fireEvent.click(slot.getByRole("button", { name: "Done selecting projects" }));
-    expect(heading(slot, "Done").querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(25);
-    expect(slot.getByRole("button", { name: "Load 5 more threads in Done" })).toBeTruthy();
-    expect(slot.queryByRole("button", { name: "Show fewer threads in Done" })).toBeNull();
-    const finalPage = slot.getByRole("button", { name: "Load 5 more threads in Done" });
+    expect(heading(slot, "Complete").querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(25);
+    expect(slot.getByRole("button", { name: "Load 5 more threads in Complete" })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Show fewer threads in Complete" })).toBeNull();
+    const finalPage = slot.getByRole("button", { name: "Load 5 more threads in Complete" });
     finalPage.focus();
     fireEvent.click(finalPage);
-    expect(heading(slot, "Done").querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(30);
-    expect(slot.queryByRole("button", { name: "Load 5 more threads in Done" })).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: "Show fewer threads in Done" })));
+    expect(heading(slot, "Complete").querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(30);
+    expect(slot.queryByRole("button", { name: "Load 5 more threads in Complete" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: "Show fewer threads in Complete" })));
     } finally {
       if (originalScrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", originalScrollIntoView);
       else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
@@ -591,7 +590,8 @@ describe("ultra sidebar thread list", () => {
     expect(pinned.textContent).toContain("t2");
     // A pinned row names its own project, because the heading above it does not.
     expect(pinned.textContent).toContain("Beta");
-    expect(heading(slot, "Beta").textContent).not.toContain("t2");
+    // Beta has no other thread, so its heading folds into Empty projects.
+    expect(slot.queryByRole("button", { name: "Collapse Beta" })).toBeNull();
     expect(Array.from(slot.container.querySelectorAll("section"))[0]).toBe(pinned);
 
     // And the same action releases it.
@@ -644,43 +644,12 @@ describe("ultra sidebar thread list", () => {
     }
   });
 
-  it("finishes and reopens from any row, a backlogged one included", async () => {
-    const slot = await mount({
-      threads: [
-        thread({ id: "parked", projectId: "p1" }),
-        thread({ id: "shipped", projectId: "p1" }),
-      ],
-      sidebarState: {
-        ...state,
-        lifecycle: [
-          { threadId: "parked", status: "backlog", snoozedUntil: null },
-          { threadId: "shipped", status: "done", snoozedUntil: null },
-        ],
-      },
-    });
-    // Not the project heading: a parked row names its own project too, so
-    // "Alpha" is on screen more than once.
-    await slot.findByText("Backlog");
-    const row = (id: string) =>
-      slot.container.querySelector<HTMLElement>(
-        `[data-sidebar-thread-id="${id}"]`,
-      )!;
-
-    // Neither is snoozable: both are already out of the active list, so the
-    // button would hide what is hidden.
-    for (const id of ["parked", "shipped"]) {
-      expect(
-        within(row(id)).queryByLabelText("Hide until tomorrow at 9am"),
-      ).toBeNull();
-    }
-
-    // A backlogged thread can be finished, and a finished one reverses.
-    expect(within(row("shipped")).queryByLabelText("Mark done")).toBeNull();
-    fireEvent.click(within(row("parked")).getByLabelText("Mark done"));
-    await waitFor(() => expect(row("parked").dataset.sidebarBucket).toBe("done"));
-    fireEvent.click(within(row("shipped")).getByLabelText("Reopen"));
+  it("marks a thread done and archives it from the row", async () => {
+    const slot = await mount({ threads: [thread({ id: "live", projectId: "p1" })] });
+    const row = slot.container.querySelector<HTMLElement>('[data-sidebar-thread-id="live"]')!;
+    fireEvent.click(within(row).getByLabelText("Mark done and archive"));
     await waitFor(() =>
-      expect(row("shipped").dataset.sidebarBucket).toBe("in-progress"),
+      expect(sidebarActionCalls(slot)).toContainEqual(expect.objectContaining({ method: "archive", threadId: "live" })),
     );
   });
 
@@ -1043,7 +1012,10 @@ describe("ultra sidebar thread list", () => {
     );
     await slot.findByText("Alpha");
 
-    fireEvent.click(slot.getByLabelText("Mark done"));
+    fireEvent.click(slot.getByLabelText("Mark done and archive"));
+    await waitFor(() =>
+      expect(sidebarActionCalls(slot)).toContainEqual(expect.objectContaining({ method: "archive", threadId: "t1" })),
+    );
     await waitFor(() =>
       expect(slot.inspection.rpcCalls).toContainEqual(
         expect.objectContaining({
@@ -1085,13 +1057,13 @@ describe("ultra sidebar thread list", () => {
   // The row holds its slot while it fades so the list closes the gap after it
   // has gone, rather than blinking the row out and jumping everything under
   // it in the same frame.
-  it("fades a filed row out where it stood before the list closes the gap", async () => {
-    const slot = await mount({
-      threads: [
-        thread({ id: "t1", projectId: "p1" }),
-        thread({ id: "t2", projectId: "p1" }),
-      ],
-    });
+  it("fades a done row out where it stood once bb archives it", async () => {
+    liveHost.enabled = true;
+    liveHost.threads = [
+      thread({ id: "t1", projectId: "p1" }),
+      thread({ id: "t2", projectId: "p1" }),
+    ];
+    const slot = await mount({ threads: [] });
     await slot.findByText("Alpha");
     const ghosts = () => slot.container.querySelectorAll(".bb-ws-row-leaving");
     const rows = (id: string) =>
@@ -1099,14 +1071,19 @@ describe("ultra sidebar thread list", () => {
     expect(ghosts()).toHaveLength(0);
 
     fireEvent.click(
-      within(rows("t1")[0] as HTMLElement).getByLabelText("Mark done"),
+      within(rows("t1")[0] as HTMLElement).getByLabelText("Mark done and archive"),
     );
+    await waitFor(() =>
+      expect(slot.inspection.rpcCalls).toContainEqual(expect.objectContaining({ method: "sidebar.edit" })),
+    );
+    // bb drops the archived thread from the host list.
+    liveHost.threads = [thread({ id: "t2", projectId: "p1" })];
+    await act(async () => slot.navigateTo("t2"));
 
     await waitFor(() => expect(ghosts()).toHaveLength(1));
     // The ghost is a picture of where the thread was, so bb's own row
-    // shortcuts and this sidebar's reveal must not find a second "t1".
-    expect(rows("t1")).toHaveLength(1);
-    expect((rows("t1")[0] as HTMLElement).dataset.sidebarBucket).toBe("done");
+    // shortcuts and this sidebar's reveal must not find a "t1".
+    expect(rows("t1")).toHaveLength(0);
 
     await waitFor(() => expect(ghosts()).toHaveLength(0));
   });
@@ -1296,7 +1273,7 @@ describe("ultra sidebar thread list", () => {
     expect(slot.inspection.rpcCalls.length).toBeGreaterThanOrEqual(before);
   });
 
-  it("groups by status out of the box, with all five buckets", async () => {
+  it("groups by status out of the box, with all buckets but Archived", async () => {
     const slot = await mount({
       mode: null,
       threads: [
@@ -1305,57 +1282,27 @@ describe("ultra sidebar thread list", () => {
       ],
     });
 
-    // The workflow is always the same five headings, filled or not.
-    await slot.findByText("In review");
-    for (const label of [
-      "Done",
-      "In review",
-      "In progress",
-      "Backlog",
-      "Canceled",
-    ]) {
+    // The workflow is always the same headings, filled or not.
+    await slot.findByRole("button", { name: "Collapse Pull request" });
+    for (const label of ["Needs attention", "In progress", "Complete", "Pull request", "Merged", "Closed"]) {
       expect(heading(slot, label)).toBeTruthy();
     }
-    // With no pull request and no manual status, both are In progress, and
-    // the row still says what the agent is doing.
-    const inProgress = heading(slot, "In progress");
-    expect(inProgress.textContent).toContain("waiting");
-    expect(inProgress.textContent).toContain("quiet");
-    expect(inProgress.textContent).toContain("Your turn");
-    const rows = slot.container.querySelectorAll("[data-sidebar-thread-id]");
-    expect(rows).toHaveLength(2);
-    expect(slot.container.querySelectorAll("[data-agent-orb]")).toHaveLength(0);
+    expect(slot.queryByRole("button", { name: "Collapse Archived" })).toBeNull();
+    // A question files the thread under Needs attention, with the amber glyph
+    // at the end of its title line.
+    const attention = heading(slot, "Needs attention");
+    expect(attention.textContent).toContain("waiting");
+    const waiting = slot.container.querySelector('[data-sidebar-thread-id="waiting"]')!;
+    expect(waiting.querySelector('.bb-ws-mainline [data-bucket-glyph="needs-attention"]')).not.toBeNull();
+    const complete = heading(slot, "Complete");
+    expect(complete.textContent).toContain("quiet");
+    expect(complete.textContent).not.toContain("waiting");
+    expect(slot.container.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(2);
     expect(slot.container.querySelectorAll("[data-text-shimmer]")).toHaveLength(0);
-    expect(slot.getByText("Your turn").closest(".bb-ws-mainline")).not.toBeNull();
-    // No project headings inside a status bucket — but the rows still name
+    // No project headings inside a status bucket, but the rows still name
     // their project, since the heading above them does not.
     expect(slot.queryByLabelText("Collapse Alpha")).toBeNull();
-    expect(inProgress.textContent).toContain("Alpha");
-  });
-
-  it("files a hand-set status in its bucket", async () => {
-    const slot = await mount({
-      mode: "status",
-      threads: [
-        thread({ id: "parked", projectId: "p1" }),
-        thread({ id: "shipped", projectId: "p1" }),
-        thread({ id: "quiet", projectId: "p1" }),
-      ],
-      sidebarState: {
-        ...state,
-        lifecycle: [
-          { threadId: "parked", status: "backlog", snoozedUntil: null },
-          { threadId: "shipped", status: "done", snoozedUntil: null },
-        ],
-      },
-    });
-
-    await slot.findByText("Backlog");
-    expect(heading(slot, "Backlog").textContent).toContain("parked");
-    expect(heading(slot, "Done").textContent).toContain("shipped");
-    const inProgress = heading(slot, "In progress");
-    expect(inProgress.textContent).toContain("quiet");
-    expect(inProgress.textContent).not.toContain("parked");
+    expect(complete.textContent).toContain("Alpha");
   });
 
   // A bucket gathers rows from every project; they must read as one
@@ -1367,44 +1314,43 @@ describe("ultra sidebar thread list", () => {
         thread({ id: "alpha-old", projectId: "p1", createdAt: 10 }),
         thread({ id: "beta-new", projectId: "p2", createdAt: 30 }),
         thread({ id: "alpha-mid", projectId: "p1", createdAt: 20 }),
-        thread({
-          id: "alpha-asks",
-          projectId: "p1",
-          createdAt: 1,
-          hasPendingInteraction: true,
-        }),
       ],
     });
-    await slot.findByText("In review");
+    await slot.findByRole("button", { name: "Collapse Complete" });
     const ids = Array.from(
-      heading(slot, "In progress").querySelectorAll("[data-sidebar-thread-id]"),
+      heading(slot, "Complete").querySelectorAll("[data-sidebar-thread-id]"),
     ).map((row) => row.getAttribute("data-sidebar-thread-id"));
-    // Whatever is waiting on the person, then newest created first.
-    expect(ids).toEqual(["alpha-asks", "beta-new", "alpha-mid", "alpha-old"]);
+    expect(ids).toEqual(["beta-new", "alpha-mid", "alpha-old"]);
   });
 
   // Finished work leaves its project rather than crowding it.
-  it("trails Done, Backlog and Canceled after the projects", async () => {
+  it("trails Merged after the projects", async () => {
     const slot = await mount({
       mode: "project",
       threads: [
-        thread({ id: "shipped", projectId: "p1" }),
+        thread({
+          id: "shipped", projectId: "p1",
+          environment: { id: "ship-env", name: "ship", branchName: "ship", providerId: null, workspaceDisplayKind: null, path: null, isWorktree: null },
+        }),
         thread({ id: "quiet", projectId: "p1" }),
       ],
-      sidebarState: {
-        ...state,
-        lifecycle: [
-          { threadId: "shipped", status: "done", snoozedUntil: null },
-        ],
+      rpc: {
+        "threads.pullRequests": () => ({ entries: [{
+          threadId: "shipped", number: 7, title: "Ship",
+          url: "https://github.com/acme/alpha/pull/7",
+          state: "merged", attention: "merged",
+          checksState: "passing", failedChecks: 0,
+        }] }),
       },
     });
 
+    await slot.findByRole("button", { name: "Collapse Merged" });
     const alpha = heading(slot, "Alpha");
     expect(alpha.textContent).toContain("quiet");
     expect(alpha.textContent).not.toContain("shipped");
-    expect(heading(slot, "Done").textContent).toContain("shipped");
-    // Nothing is in the backlog, so there is no Backlog heading here.
-    expect(slot.queryByText("Backlog")).toBeNull();
+    expect(heading(slot, "Merged").textContent).toContain("shipped");
+    // Nothing is closed, so there is no Closed heading here.
+    expect(slot.queryByRole("button", { name: "Collapse Closed" })).toBeNull();
   });
 
   it("refetches when a newer revision arrives, and ignores its own echo", async () => {
@@ -1466,7 +1412,9 @@ describe("ultra sidebar thread list", () => {
     fireEvent.click(slot.getByLabelText("View options"));
     const menu = await slot.findByText("Show on rows");
     expect(menu).toBeTruthy();
-    expect(slot.getByLabelText("Model")).toBeTruthy();
+    // Model has a switch on rows and one in the hover card.
+    expect(slot.getAllByLabelText("Model")).toHaveLength(2);
+    expect(slot.getByText("Hover card")).toBeTruthy();
     expect(slot.getByLabelText("Archived")).toBeTruthy();
     expect(slot.getByText("Collapse all")).toBeTruthy();
   });
@@ -1488,20 +1436,27 @@ describe("sidebar keyboard and bulk actions", () => {
     fireEvent.click(row("a"), { ctrlKey: true });
     fireEvent.click(row("c"), { shiftKey: true });
     expect(slot.getByText("3 selected")).toBeTruthy();
+    const edits = () => slot.inspection.rpcCalls.filter((call) => call.method === "sidebar.edit");
+    const statusOf = (id: string) =>
+      (edits().at(-1)!.input as { after: SidebarState }).after.lifecycle
+        .find((entry) => entry.threadId === id)?.status ?? null;
     fireEvent.click(within(slot.getByRole("toolbar", { name: "Selected threads" })).getByRole("button", { name: "Mark done" }));
-    await waitFor(() => expect(row("a").dataset.sidebarBucket).toBe("done"));
-    expect(
-      slot.inspection.rpcCalls.filter(
-        (call) => call.method === "sidebar.edit",
-      ),
-    ).toHaveLength(1);
+    await waitFor(() => expect(edits()).toHaveLength(1));
+    expect(["a", "b", "c"].map(statusOf)).toEqual(["done", "done", "done"]);
+    // bb's own archive drops all but the last of several same-tick calls,
+    // so a bulk done archives each thread through the SDK.
+    await waitFor(() =>
+      expect(slot.inspection.sdkCalls.filter((call) => call.method === "threads.archive").map((call) => call.args[0]))
+        .toEqual(["a", "b", "c"].map((threadId) => ({ threadId }))),
+    );
+    expect(sidebarActionCalls(slot).filter((call) => call.method === "archive")).toEqual([]);
     row("a").focus();
     fireEvent.keyDown(row("a"), { key: "z", ctrlKey: true });
-    await waitFor(() =>
-      expect(row("a").dataset.sidebarBucket).toBe("in-progress"),
-    );
+    await waitFor(() => expect(edits()).toHaveLength(2));
+    expect(statusOf("a")).toBeNull();
     fireEvent.keyDown(row("a"), { key: "z", metaKey: true, shiftKey: true });
-    await waitFor(() => expect(row("c").dataset.sidebarBucket).toBe("done"));
+    await waitFor(() => expect(edits()).toHaveLength(3));
+    expect(statusOf("c")).toBe("done");
     expect(
       sidebarActionCalls(slot).filter(
         (call) => call.method === "open",
@@ -1638,7 +1593,7 @@ describe("a reorder sticks", () => {
       ],
     });
     const list = () =>
-      heading(slot, mode === "project" ? "Alpha" : "In progress");
+      heading(slot, mode === "project" ? "Alpha" : "Complete");
     expect(rowIds(slot, list())).toEqual(["a", "b", "c"]);
 
     const row = slot.container.querySelector<HTMLElement>(
@@ -1677,11 +1632,11 @@ describe("a reorder sticks", () => {
   });
 });
 
-it("keeps only the New thread bar at rest and selects through standard checkboxes", async () => {
+it("keeps the toolbar free of a second New thread and selects through standard checkboxes", async () => {
   const slot = await mount({ threads: [thread({ id: "a", projectId: "p1" }), thread({ id: "b", projectId: "p1" })] });
   expect(slot.queryByRole("toolbar", { name: "Sidebar actions" })).toBeNull();
   expect(slot.queryByRole("toolbar", { name: "Selected threads" })).toBeNull();
-  expect(slot.getByRole("button", { name: "New thread" })).toBeTruthy();
+  expect(slot.queryByRole("button", { name: "New thread" })).toBeNull();
   fireEvent.click(slot.getByRole("button", { name: "Select threads" }));
   const checkbox = slot.getByRole("checkbox", { name: "Select a" });
   fireEvent.click(checkbox);
@@ -1706,7 +1661,8 @@ describe("New thread", () => {
     const onNavigate = vi.fn();
     try {
       const slot = await mount({ threads: [thread({ id: "a", projectId: "p1" })], onNavigate });
-      fireEvent.click(slot.getByRole("button", { name: "New thread" }));
+      fireEvent.contextMenu(slot.getByLabelText("Sidebar threads"));
+      fireEvent.click(await slot.findByRole("menuitem", { name: "New thread" }));
       expect(offered).toHaveLength(1);
       expect(offered[0]!.cancelable).toBe(true);
       expect(sidebarActionCalls(slot)).toContainEqual({ method: "openNewThread", options: { focusPrompt: true } });
@@ -1722,7 +1678,8 @@ describe("New thread", () => {
     const onNavigate = vi.fn();
     try {
       const slot = await mount({ threads: [thread({ id: "a", projectId: "p1" })], onNavigate });
-      fireEvent.click(slot.getByRole("button", { name: "New thread" }));
+      fireEvent.contextMenu(slot.getByLabelText("Sidebar threads"));
+      fireEvent.click(await slot.findByRole("menuitem", { name: "New thread" }));
       expect(sidebarActionCalls(slot).filter(call => call.method === "openNewThread")).toHaveLength(0);
       expect(onNavigate).toHaveBeenCalledTimes(1);
     } finally {
@@ -1756,8 +1713,7 @@ describe("compact goal context", () => {
     } });
     const line = slot.container.querySelector("[data-thread-modes]")!;
     expect(line.textContent).toContain("Goal");
-    expect(line.textContent).not.toContain("Your turn");
-    expect(slot.getByText("Your turn").closest(".bb-ws-mainline")).not.toBeNull();
+    expect(slot.container.querySelector('.bb-ws-mainline [data-bucket-glyph="needs-attention"]')).not.toBeNull();
     fireEvent.click(slot.getByRole("button", { name: "Active goal: details for waiting-goal" }));
     expect(await slot.findByText("Goal details unavailable. Open the thread to inspect.")).toBeTruthy();
     expect(sidebarActionCalls(slot).filter(call => call.method === "open")).toHaveLength(0);
@@ -1790,14 +1746,14 @@ it.each([false, true])("keeps attention beside the title without tinting rows, c
   expect(row("waiting").getAttribute("data-live-tone")).toBeNull();
   expect(row("failed").getAttribute("data-live-tone")).toBeNull();
   expect(within(row("running")).getByText("Working").classList.contains("ws-tone-working")).toBe(true);
-  const badge = within(row("waiting")).getByText("Your turn");
-  expect(badge.classList.contains("bb-ws-your-turn")).toBe(true);
-  expect(badge.closest(".bb-ws-mainline")).not.toBeNull();
+  expect(row("waiting").querySelector('.bb-ws-mainline [data-bucket-glyph="needs-attention"]')).not.toBeNull();
   expect(row("waiting").querySelector("[data-agent-orb]")).toBeNull();
   expect(row("waiting").querySelector("[data-text-shimmer]")).toBeNull();
   expect(within(row("failed")).getByText("Failed").classList.contains("ws-tone-danger")).toBe(true);
   expect(row("quiet").getAttribute("data-live-tone")).toBeNull();
-  expect(row("quiet").getAttribute("data-sidebar-bucket")).toBe("in-progress");
+  expect(row("quiet").getAttribute("data-sidebar-bucket")).toBe("complete");
+  expect(row("waiting").getAttribute("data-sidebar-bucket")).toBe("needs-attention");
+  expect(row("running").querySelector('[data-bucket-glyph="in-progress"]')?.classList.contains("animate-pulse")).toBe(true);
   expect(row("running").querySelector(".bb-ws-title[data-text-shimmer]")).not.toBeNull();
 });
 
@@ -1848,7 +1804,7 @@ describe("project context and change counts", () => {
     const review = rowById("review");
     expect(within(progress).getByText("+12").classList.contains("ws-tone-success")).toBe(true);
     expect(within(progress).getByText("−3").classList.contains("ws-tone-danger")).toBe(true);
-    expect(review.querySelector('[data-agent-orb="working"]')).not.toBeNull();
+    expect(review.querySelector('[data-bucket-glyph="pull-request"]')?.classList.contains("animate-pulse")).toBe(true);
     expect(review.querySelector("[data-thread-project]")?.closest("[data-thread-modes]")).not.toBeNull();
     expect(progress.querySelector("[data-thread-modes]")?.classList.contains("flex-wrap")).toBe(true);
     for (const row of [progress, review]) {
@@ -1898,19 +1854,69 @@ describe("project context and change counts", () => {
   it("keeps project context on parked rows without dangling mode separators", async () => {
     // Parked rows leave their project section for a status heading, which is
     // exactly when the row has to name the project itself.
+    const env = (id: string) => ({ id, name: id, branchName: id, providerId: null, workspaceDisplayKind: null, path: null, isWorktree: null });
+    const merged = (threadId: string) => ({
+      threadId, number: 1, title: threadId, url: `https://github.com/acme/alpha/pull/${threadId}`,
+      state: "merged", attention: "merged", checksState: "passing", failedChecks: 0,
+    });
     const slot = await mount({ compact: true, threads: [
-      thread({ id: "parked", projectId: "p1" }),
-      thread({ id: "parked-goal", projectId: "p1", activity: { goals: 1, planMode: 0, workflows: 0, backgroundAgents: 0, backgroundCommands: 0 } }),
-    ], sidebarState: { ...state, lifecycle: [
-      { threadId: "parked", status: "done", snoozedUntil: null },
-      { threadId: "parked-goal", status: "done", snoozedUntil: null },
-    ] } });
-    expect(slot.container.querySelector('[data-sidebar-thread-id="parked"] [data-thread-modes]')?.textContent).toBe("Alpha");
+      thread({ id: "parked", projectId: "p1", environment: env("env-parked") }),
+      thread({ id: "parked-goal", projectId: "p1", environment: env("env-goal"), activity: { goals: 1, planMode: 0, workflows: 0, backgroundAgents: 0, backgroundCommands: 0 } }),
+    ], rpc: { "threads.pullRequests": () => ({ entries: [merged("parked"), merged("parked-goal")] }) } });
+    await slot.findByRole("button", { name: "Collapse Merged" });
+    expect(slot.container.querySelector('[data-sidebar-thread-id="parked"] [data-thread-modes]')?.textContent).toBe("Alpha#1");
     const modes = slot.container.querySelector('[data-sidebar-thread-id="parked-goal"] [data-thread-modes]');
-    expect(modes?.textContent).toBe("Alpha·Goal");
+    expect(modes?.textContent).toBe("Alpha#1·Goal");
   });
 });
 
+
+describe("project order", () => {
+  it("moves a project past the hidden empty project above it", async () => {
+    const slot = await mount({
+      mode: "project",
+      projects: [
+        ...projects,
+        { id: "p3", name: "Gamma", isPersonal: false, href: "/projects/p3", settingsHref: "/projects/p3/settings" },
+      ],
+      threads: [thread({ id: "a", projectId: "p1" }), thread({ id: "g", projectId: "p3" })],
+    });
+    // Beta has no threads, so Alpha sits directly above Gamma on screen.
+    const gamma = heading(slot, "Gamma").querySelector<HTMLElement>("[data-sidebar-section-id]")!;
+    fireEvent.contextMenu(gamma);
+    fireEvent.click(await slot.findByRole("menuitem", { name: /Move project up/ }));
+    await waitFor(() =>
+      expect(slot.inspection.rpcCalls.some((call) => call.method === "sidebar.edit")).toBe(true),
+    );
+    const edit = slot.inspection.rpcCalls.filter((call) => call.method === "sidebar.edit").at(-1)!;
+    const order = (edit.input as { after: SidebarState }).after.order
+      .filter((entry) => entry.kind === "project")
+      .sort((x, y) => x.sortIndex - y.sortIndex)
+      .map((entry) => entry.refId);
+    expect(order.indexOf("p3")).toBeLessThan(order.indexOf("p1"));
+    expect(order).not.toContain(expect.stringMatching(/^folder:/));
+  });
+});
+
+describe("single-line rows", () => {
+  it("puts the agent and branch on the title line and drops the summary line", async () => {
+    window.localStorage.setItem("bb-workspace-sidebar:single-line:v1", "true");
+    window.localStorage.setItem("bb-workspace-sidebar:row-details:v1", JSON.stringify({
+      project: false, branch: true, machine: false, model: false, pullRequest: false,
+      agent: true, modes: false, status: false, changes: false,
+    }));
+    const slot = await mount({ threads: [thread({
+      id: "t1", projectId: "p1",
+      environment: { id: "env1", name: "wt", branchName: "feat/sidebar", providerId: null, workspaceDisplayKind: null, path: null, isWorktree: null },
+    })] });
+    const row = slot.container.querySelector('[data-sidebar-thread-id="t1"]') as HTMLElement;
+    expect(row.dataset.threadLayout).toBe("single");
+    const mainline = row.querySelector(".bb-ws-mainline")!;
+    expect(mainline.querySelector("[data-thread-provider-logo]")).not.toBeNull();
+    expect(mainline.querySelector("[data-thread-inline]")?.textContent).toContain("feat/sidebar");
+    expect(row.querySelector("[data-thread-summary]")).toBeNull();
+  });
+});
 
 describe("thread summary actions", () => {
   it.each([false, true])("opens mode details and keeps machines passive with model names hidden in rows, compact=%s", async compact => {
@@ -1939,7 +1945,6 @@ describe("thread summary actions", () => {
     fireEvent.keyDown(plan, { key: "Escape" });
     await waitFor(() => expect(plan.getAttribute("aria-expanded")).toBe("false"));
     fireEvent.click(machine);
-    expect(slot.queryByRole("heading", { name: "planning" })).toBeNull();
     expect(machine.tagName).toBe("SPAN");
     expect(machine.getAttribute("aria-expanded")).toBeNull();
     expect(sidebarActionCalls(slot).filter(call => call.method === "open")).toHaveLength(0);
@@ -2253,7 +2258,9 @@ describe("sidebar project filter", () => {
 
   it("keeps empty projects available and provides a way to clear empty results", async () => {
     const slot = await mount({ mode: "project", threads: [thread({ id: "alpha-thread", projectId: "p1" })] });
-    expect(slot.getByText("Beta")).toBeTruthy();
+    // Beta has no threads, so it folds into Empty projects.
+    fireEvent.click(slot.getByRole("button", { name: /Empty projects/ }));
+    expect(within(slot.container.querySelector<HTMLElement>("[data-empty-projects]")!).getByText("Beta")).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Filter by project: All projects" }));
     fireEvent.click(await slot.findByRole("option", { name: "Beta" }));
     fireEvent.click(slot.getByRole("button", { name: "Done selecting projects" }));
@@ -2295,5 +2302,73 @@ describe("phone row actions", () => {
     expect(clusterClassOf("t1")).toContain(tabletAndUp);
     expect(clusterClassOf("t2")).not.toContain(phoneOnly);
     expect(clusterClassOf("t2")).toContain(tabletAndUp);
+  });
+});
+
+describe("row hover card", () => {
+  const cards = () => [...document.querySelectorAll("[data-thread-details] h3")].map(title => title.textContent);
+  const trigger = (slot: { container: HTMLElement }, id: string) =>
+    slot.container.querySelector(`[data-sidebar-thread-id="${id}"] > span`)!;
+  const hover = (target: Element) => fireEvent.pointerEnter(target, { pointerType: "mouse" });
+
+  it("keeps one card open, and closes it on leave while text is selected", async () => {
+    const slot = await mount({
+      threads: ["a", "b", "c"].map(id => thread({ id, projectId: "p1" })),
+    });
+    hover(trigger(slot, "a"));
+    await waitFor(() => expect(cards()).toEqual(["a"]));
+
+    // Any selection in the document at pointerup used to pin the card open.
+    window.getSelection()!.selectAllChildren(slot.container.querySelector('[data-sidebar-thread-id="b"] .bb-ws-title')!);
+    fireEvent.pointerUp(document);
+    await act(() => new Promise(resolve => setTimeout(resolve, 10)));
+    fireEvent.pointerLeave(trigger(slot, "a"), { pointerType: "mouse" });
+    await waitFor(() => expect(cards()).toEqual([]));
+
+    // Sweeping across rows with no leave in between still shows one card.
+    hover(trigger(slot, "b"));
+    await waitFor(() => expect(cards()).toEqual(["b"]));
+    hover(trigger(slot, "c"));
+    await waitFor(() => expect(cards()).toEqual(["c"]));
+  });
+
+  it("opens no card when View options turns hover cards off", async () => {
+    const slot = await mount({ threads: [thread({ id: "a", projectId: "p1" })] });
+    fireEvent.click(slot.getByLabelText("View options"));
+    fireEvent.click(await slot.findByLabelText("Show"));
+    expect(window.localStorage.getItem("bb-workspace-sidebar:hover-card:v1")).toBe("false");
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    hover(trigger(slot, "a"));
+    await act(() => new Promise(resolve => setTimeout(resolve, 20)));
+    expect(cards()).toEqual([]);
+  });
+});
+
+describe("row PR and Jira links", () => {
+  it.each(["single", "compact", "detailed"])("shows both links outside the truncating strip on %s rows", async layout => {
+    window.localStorage.setItem("bb-workspace-sidebar:row-layout:v1", layout);
+    const slot = await mount({
+      threads: [thread({
+        id: "t1", projectId: "p1",
+        environment: {
+          id: "e1", name: "hover", branchName: "ABC-123-hover",
+          providerId: null, workspaceDisplayKind: null, path: null, isWorktree: null,
+        },
+      })],
+      rpc: {
+        "jira.site": () => "https://acme.atlassian.net",
+        "threads.pullRequests": () => ({ entries: [{
+          threadId: "t1", number: 42, title: "Fix hover",
+          url: "https://github.com/acme/alpha/pull/42",
+          state: "open", attention: "none", checksState: null, failedChecks: 0,
+        }] }),
+      },
+    });
+    const row = slot.container.querySelector('[data-sidebar-thread-id="t1"]')!;
+    await waitFor(() => expect(row.querySelector("[data-thread-links]")?.textContent).toBe("#42ABC-123"));
+    expect(row.querySelector("[data-thread-inline] [data-thread-links]")).toBeNull();
+    expect(row.querySelector('[data-thread-links] [data-icon="Github"]')).not.toBeNull();
+    expect(row.querySelector('[data-thread-links] [data-icon="Jira"]')).not.toBeNull();
   });
 });
