@@ -9,7 +9,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { railElbowPx, railLeftPx } from "@/lib/indent";
 import type { ThreadNode } from "@/lib/resolve";
-import type { Section } from "@/lib/sections";
+import { projectKeyOf, type FolderSection, type ProjectSection, type Section } from "@/lib/sections";
 import { guardHandle } from "@/hooks/useSidebarDnd";
 import { sectionKey, sortableId, type DndData, type DropZone } from "@/lib/dnd";
 import { SECTION_PREVIEW_SIZE } from "@/lib/section-preview";
@@ -22,7 +22,7 @@ import {
   SectionDropDecor,
   useDragActive,
 } from "./drag-state-context";
-import { StatusIcon } from "./StatusIcon";
+import { BucketGlyph } from "./StatusIcon";
 import {
   Tooltip,
   TooltipContent,
@@ -318,23 +318,15 @@ function ChildSubtree({
 
 /** The glyph beside a heading: the bucket's, the project's, or a pin. */
 function SectionGlyph({ section }: { section: Section }) {
-  if (section.kind === "status" && section.bucket !== null) {
-    return <StatusIcon tone={section.bucket} className="size-3.5 shrink-0" />;
+  switch (section.kind) {
+    case "status":
+      return <BucketGlyph bucket={section.bucket} />;
+    case "pinned":
+      return <Icon name="Pin" className="size-3.5 shrink-0 text-muted-foreground/70" />;
+    case "project":
+    case "folder":
+      return <ProjectIcon projectId={section.projectId} className="size-3.5 shrink-0 opacity-80" />;
   }
-  if (section.kind === "pinned") {
-    return (
-      <Icon name="Pin" className="size-3.5 shrink-0 text-muted-foreground/70" />
-    );
-  }
-  if (section.projectId !== null) {
-    return (
-      <ProjectIcon
-        projectId={section.projectId}
-        className="size-3.5 shrink-0 opacity-80"
-      />
-    );
-  }
-  return null;
 }
 
 /**
@@ -362,8 +354,11 @@ export function SidebarSection({
   isCollapsed: boolean;
   onToggle(): void;
 }) {
+  const sidebar = useSidebar();
   const headingButtonRef = useRef<HTMLButtonElement>(null);
   const showLessButtonRef = useRef<HTMLButtonElement>(null);
+  const editable = projectKeyOf(section);
+  const color = editable === null ? undefined : sidebar.styleOf(editable)?.color ?? undefined;
   const remaining = section.roots.length - previewRoots.length;
   const projectId = section.kind === "project" ? section.projectId : null;
   // The section is the wide target: a thread dropped anywhere inside it —
@@ -406,7 +401,7 @@ export function SidebarSection({
           <div
             {...heading.handle}
             data-sidebar-section-id={section.id}
-            data-sidebar-project-id={section.projectId ?? undefined}
+            data-sidebar-project-id={editable ?? undefined}
             className={cn(
               "group/header flex items-center gap-1 rounded-md px-1 py-1 transition-colors",
               !isCollapsed && "text-foreground",
@@ -434,9 +429,10 @@ export function SidebarSection({
               <SectionGlyph section={section} />
               <span
                 className={cn(
-                  "min-w-0 truncate text-[11px] font-semibold uppercase tracking-wider",
+                  "min-w-0 truncate text-xs font-semibold",
                   "text-muted-foreground group-hover/header:text-foreground",
                 )}
+                style={color === undefined ? undefined : { color }}
               >
                 {section.name}
               </span>
@@ -462,13 +458,20 @@ export function SidebarSection({
                 </Tooltip>
               ) : null}
             </button>
+            {editable === null ? null : (
+              <HeadingActions
+                name={section.name}
+                onNewThread={() => sidebar.newThreadIn(threadProjectOf(section))}
+                onEdit={() => sidebar.editProject(editable)}
+              />
+            )}
           </div>
         </SectionContextMenu>
       </div>
 
       {isCollapsed ? null : section.roots.length === 0 ? (
         section.kind === "status" ? null : (
-          <p className="px-3 py-1 text-xs text-muted-foreground/70">
+          <p className="py-1 pl-7 pr-3 text-xs text-muted-foreground/70">
             {section.kind === "pinned"
               ? "Drop a thread here to pin it."
               : "No threads yet."}
@@ -508,6 +511,100 @@ export function SidebarSection({
             </button>
           ) : null}
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The bb project a new thread from this heading opens in: the project itself,
+ * or the bb project most of a folder project's threads belong to.
+ */
+function threadProjectOf(section: Section): string | null {
+  if (section.kind === "project") return section.projectId;
+  const counts = new Map<string, number>();
+  for (const root of section.roots) {
+    counts.set(root.thread.projectId, (counts.get(root.thread.projectId) ?? 0) + 1);
+  }
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
+const headingAction =
+  "flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/header:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:pointer-coarse:opacity-100";
+
+/** The hover + and ⋯ on a project heading: new thread here, and the project editor. */
+function HeadingActions({ name, onNewThread, onEdit }: { name: string; onNewThread(): void; onEdit(): void }) {
+  const button = (label: string, icon: "Plus" | "MoreHorizontal", onClick: () => void) => (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className={headingAction}
+    >
+      <Icon name={icon} className="size-3.5" />
+    </button>
+  );
+  return (
+    <>
+      {button(`New thread in ${name}`, "Plus", onNewThread)}
+      {button(`Edit ${name}`, "MoreHorizontal", onEdit)}
+    </>
+  );
+}
+
+/** Project and folder headings with no threads, folded into one collapsed group. */
+export function EmptyProjects({
+  sections,
+  open,
+  onOpenChange,
+}: {
+  sections: readonly (ProjectSection | FolderSection)[];
+  open: boolean;
+  onOpenChange(open: boolean): void;
+}) {
+  const sidebar = useSidebar();
+  if (sections.length === 0) return null;
+  return (
+    <section className="mb-1" data-empty-projects="">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+        className="flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-muted-foreground hover:text-foreground"
+      >
+        <Icon
+          name="ChevronRight"
+          className={cn("size-3 shrink-0 opacity-60 transition-transform duration-150", open && "rotate-90")}
+        />
+        <span className="text-xs font-semibold">Empty projects</span>
+        <span className="text-[11px] tabular-nums">{sections.length}</span>
+      </button>
+      {open ? (
+        <ul>
+          {sections.map((section) => {
+            const key = section.projectId;
+            const color = sidebar.styleOf(key)?.color ?? undefined;
+            return (
+              <li key={section.id} className="group/header flex items-center gap-1.5 rounded-md py-0.5 pl-5 pr-1 hover:bg-accent/60">
+                <ProjectIcon projectId={key} className="size-3.5 opacity-80" />
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" style={color === undefined ? undefined : { color }}>
+                  {section.name}
+                </span>
+                <HeadingActions
+                  name={section.name}
+                  onNewThread={() => sidebar.newThreadIn(threadProjectOf(section))}
+                  onEdit={() => sidebar.editProject(key)}
+                />
+              </li>
+            );
+          })}
+        </ul>
       ) : null}
     </section>
   );

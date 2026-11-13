@@ -17,11 +17,17 @@ const actions = vi.hoisted(() => ({
   })),
 }));
 vi.mock("./sidebar-context", () => ({ useSidebar: () => actions }));
+const selection = vi.hoisted(() => ({
+  selected: new Set<string>(),
+  batch: vi.fn((_label: string, action: () => void) => action()),
+  exit: vi.fn(),
+}));
+vi.mock("./SidebarInteractions", () => ({ useSidebarSelection: () => selection }));
 // jsdom lacks both; cmdk's list measures itself and scrolls to the selection.
 vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
 Element.prototype.scrollIntoView = () => {};
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); selection.selected = new Set(); });
 
 function mount(
   parentThreadId: string | null = null,
@@ -44,13 +50,6 @@ function mount(
   return onBackgroundContextMenu;
 }
 
-async function openSubmenu(trigger: RegExp, group: string) {
-  const item = await screen.findByRole("menuitem", { name: trigger });
-  item.focus();
-  fireEvent.keyDown(item, { key: "ArrowRight" });
-  return screen.findByRole("group", { name: group });
-}
-
 async function openOrderMenu() {
   const order = await screen.findByRole("menuitem", { name: /^Order/ });
   order.focus();
@@ -66,7 +65,6 @@ function mountSection(section: Partial<Section>) {
         name: "Alpha",
         kind: "project",
         projectId: "p1",
-        bucket: null,
         roots: [],
         threadCount: 0,
         showProject: false,
@@ -81,6 +79,22 @@ function mountSection(section: Partial<Section>) {
 }
 
 describe("thread context menus", () => {
+  it("finishes the whole selection when the row is part of it, and the row alone otherwise", async () => {
+    selection.selected = new Set(["t1", "t2", "t3"]);
+    mount();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Done and archive/ }));
+    expect(actions.setStatus.mock.calls).toEqual([["t1", "done"], ["t2", "done"], ["t3", "done"]]);
+    expect(selection.batch).toHaveBeenCalledTimes(1);
+    expect(selection.exit).toHaveBeenCalledTimes(1);
+    cleanup();
+    vi.clearAllMocks();
+    selection.selected = new Set(["t2", "t3"]);
+    mount();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Done and archive/ }));
+    expect(actions.setStatus.mock.calls).toEqual([["t1", "done"]]);
+    expect(selection.batch).not.toHaveBeenCalled();
+  });
+
   it("keeps the thread menu scoped, with direct navigation and isolated destructive actions", async () => {
     const background = mount();
     const navigation = await screen.findByRole("group", { name: "Open thread" });
@@ -112,17 +126,9 @@ describe("thread context menus", () => {
     expect(screen.queryByRole("menuitem", { name: /Pin to top/ })).toBeNull();
   });
 
-  it("offers every status but In review, which no choice of ours can bring about", async () => {
+  it("marks a thread done, which archives it, from Done and archive", async () => {
     mount();
-    const status = await openSubmenu(/^Status/, "Thread status");
-    expect(
-      within(status)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent?.replace(/D$/, "")),
-    ).toEqual(["Done", "In progress", "Backlog", "Canceled"]);
-    // Reachable from anywhere, a backlogged thread included: the row's own
-    // button is hidden on some rows, this never is.
-    fireEvent.click(within(status).getByRole("menuitem", { name: /^Done/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Done and archive/ }));
     expect(actions.setStatus).toHaveBeenCalledWith("t1", "done");
   });
 
@@ -187,20 +193,20 @@ describe("section context menu", () => {
     expect(actions.resetOrder).toHaveBeenCalledWith("project:p1");
   });
 
-  it("says why the In review heading takes no drop, rather than leaving a dead target", async () => {
-    mountSection({ id: "status:in-review", name: "In review", kind: "status", projectId: null, bucket: "in-review" });
+  it("says why a computed heading takes no drop, rather than leaving a dead target", async () => {
+    mountSection({ id: "status:pull-request", name: "Pull request", kind: "status", bucket: "pull-request" });
     expect(
-      await screen.findByRole("menuitem", { name: /In review follows the pull request/ }),
+      await screen.findByRole("menuitem", { name: /Set by the thread and its pull request/ }),
     ).toBeTruthy();
     cleanup();
-    // Every other bucket does take a drop, so none of them explains itself.
-    mountSection({ id: "status:backlog", name: "Backlog", kind: "status", projectId: null, bucket: "backlog" });
+    // In progress takes a drop, so it does not explain itself.
+    mountSection({ id: "status:in-progress", name: "In progress", kind: "status", bucket: "in-progress" });
     await screen.findByRole("menu");
-    expect(screen.queryByRole("menuitem", { name: /follows the pull request/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Set by the thread/ })).toBeNull();
   });
 
   it("has nothing to start or reorder on a status bucket", async () => {
-    mountSection({ id: "status:done", name: "Done", kind: "status", projectId: null, bucket: "done" });
+    mountSection({ id: "status:merged", name: "Merged", kind: "status", bucket: "merged" });
     await screen.findByRole("menu");
     expect(screen.queryByRole("menuitem", { name: /New thread here/ })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: /Move project up/ })).toBeNull();

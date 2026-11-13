@@ -4,7 +4,9 @@
 // glyphs are BB icon names the server rendered to SVG, drawn as a mask so
 // they take the row's text color like any other icon.
 import { useState } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Icon } from "@/components/ui/icon";
+import { PROJECT_GLYPHS } from "@/lib/project-styles";
 import { cn } from "@/lib/utils";
 import { useSidebar } from "./sidebar-context";
 
@@ -22,9 +24,23 @@ export function ProjectIcon({
 }) {
   const sidebar = useSidebar();
   const artwork = sidebar.artworkOf(projectId);
+  const style = sidebar.styleOf(projectId);
+  const color = style?.color ? { color: style.color } : undefined;
   // A route that answers 404 (the cache expired and the file is gone) must
   // not leave a broken-image box in the sidebar.
   const [failed, setFailed] = useState<string | null>(null);
+
+  if (style?.glyph) {
+    return (
+      <HugeiconsIcon
+        icon={PROJECT_GLYPHS[style.glyph]}
+        aria-hidden="true"
+        data-project-artwork="custom"
+        className={cn("shrink-0", className)}
+        style={color}
+      />
+    );
+  }
 
   if (artwork?.kind === "image" && failed !== projectId) {
     return (
@@ -49,6 +65,7 @@ export function ProjectIcon({
         data-project-artwork="glyph"
         className={cn("inline-block shrink-0 bg-current", className)}
         style={{
+          ...color,
           maskImage: mask,
           WebkitMaskImage: mask,
           maskSize: "contain",
@@ -63,7 +80,7 @@ export function ProjectIcon({
   }
 
   return (
-    <span data-project-artwork="folder" className={cn("inline-flex shrink-0", className)}>
+    <span data-project-artwork="folder" className={cn("inline-flex shrink-0", className)} style={color}>
       <Icon name="Folder" aria-hidden className="size-full" />
     </span>
   );

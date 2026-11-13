@@ -10,12 +10,13 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import { cn } from "@/lib/utils";
 import type { ThreadPullRequest } from "@/hooks/useThreadPullRequests";
-import type { ManualStatus } from "@/lib/status";
+import { isWorking } from "@/lib/resolve";
+import { isBusy, statusBucket, type ManualStatus, type StatusBucket } from "@/lib/status";
 import { relativeTime } from "./MetaBadges";
 import { RowTip } from "./RowTip";
 
 /**
- * Six families, so a glance at colour alone is meaningful even before the
+ * Six families, so a glance at color alone is meaningful even before the
  * word is read.
  */
 export type StatusTone =
@@ -191,6 +192,23 @@ export function threadStatus(
   if (manualStatus !== null) return BY_MANUAL[manualStatus];
 
   return indicator ?? null;
+}
+
+/** Whether a status asks the person to act: a question, a failure, or a pull request problem. */
+export function isAttention(status: Status | null): boolean {
+  return status?.tone === "needs-you" || status?.tone === "problem";
+}
+
+/** The bucket a thread files under. Sections and rows both read it here. */
+export function bucketOfThread(
+  thread: PluginSidebarThread,
+  pullRequest: ThreadPullRequest | undefined,
+): StatusBucket {
+  return statusBucket(pullRequest, {
+    attention: isAttention(threadStatus(thread, pullRequest)),
+    working: isWorking(thread) || isBusy(thread.status) || thread.queuedWork === "waiting",
+    archived: thread.isArchived,
+  });
 }
 
 export function ThreadStatus({

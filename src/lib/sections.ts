@@ -21,6 +21,7 @@ import {
   statusSectionId,
   type StatusBucket,
 } from "./status";
+import { folderKey, type FolderKey, type FolderProject } from "./project-styles";
 
 export type GroupBy = "project" | "status";
 
@@ -39,15 +40,10 @@ export function projectFromSectionId(id: string): string | null {
     : null;
 }
 
-/** One collapsible heading and the root rows under it. */
-export interface Section {
+/** The fields each collapsible heading has. */
+interface SectionBase {
   id: string;
   name: string;
-  kind: "pinned" | "project" | "status";
-  /** The project this section names, for a project section. */
-  projectId: string | null;
-  /** The bucket this section names, for a status section. */
-  bucket: StatusBucket | null;
   roots: ThreadNode[];
   /** Rows, subagents included. */
   threadCount: number;
@@ -60,15 +56,57 @@ export interface Section {
   manual: boolean;
 }
 
+/** Pinned threads from any project. */
+export interface PinnedSection extends SectionBase {
+  kind: "pinned";
+}
+
+/** One bb project's active threads. */
+export interface ProjectSection extends SectionBase {
+  kind: "project";
+  projectId: string;
+}
+
+/** One folder project's active threads. */
+export interface FolderSection extends SectionBase {
+  kind: "folder";
+  projectId: FolderKey;
+}
+
+/** One status bucket. */
+export interface StatusSection extends SectionBase {
+  kind: "status";
+  bucket: StatusBucket;
+}
+
+/** One collapsible heading and the root rows under it. */
+export type Section = PinnedSection | ProjectSection | FolderSection | StatusSection;
+
+/** The project key a heading names: a bb project id or a folder key, else null. */
+export function projectKeyOf(section: Section): string | null {
+  return section.kind === "project" || section.kind === "folder" ? section.projectId : null;
+}
+
+/** The bb project ids of the project headings, in list order. */
+export function projectOrder(sections: readonly Section[]): string[] {
+  return sections.flatMap((section) => (section.kind === "project" ? [section.projectId] : []));
+}
+
 export interface SectionsInput {
   tree: ResolvedTree;
   groupBy: GroupBy;
   /** Empty means every project. */
   projectIds: readonly string[];
-  /** Which of the five status buckets a thread belongs in. */
+  /** Which status bucket a thread belongs in. */
   bucketOf(node: ThreadNode): StatusBucket;
   /** Keep the empty Pinned section on screen as a drop target. */
   dragging?: boolean;
+  /** Show the Archived section. */
+  showArchived?: boolean;
+  /** Folder projects, in heading order ahead of the bb projects. */
+  folderProjects?: readonly FolderProject[];
+  /** The folder project id a root thread files under, or null. */
+  folderOf?(node: ThreadNode): string | null;
 }
 
 /**
@@ -82,10 +120,18 @@ export interface SectionsInput {
  * alone, so reopening the thread puts it straight back.
  */
 export function buildSections(input: SectionsInput): Section[] {
-  const { tree, groupBy, projectIds, bucketOf, dragging = false } = input;
+  const { tree, groupBy, projectIds, bucketOf, dragging = false, showArchived = false } = input;
+  const hidden = (bucket: StatusBucket) => bucket === "archived" && !showArchived;
+  const folderProjects = input.folderProjects ?? [];
+  const folderOf = input.folderOf ?? (() => null);
   const wanted = new Set(projectIds);
-  const keep = (node: ThreadNode) =>
-    wanted.size === 0 || wanted.has(node.thread.projectId);
+  const wants = (key: string) => wanted.size === 0 || wanted.has(key);
+  // A thread passes the filter on its bb project or on its folder project.
+  const keep = (node: ThreadNode) => {
+    if (wants(node.thread.projectId)) return true;
+    const folder = folderOf(node);
+    return folder !== null && wanted.has(folderKey(folder));
+  };
 
   const pinnedRoots: ThreadNode[] = [];
   const finishedPins: ThreadNode[] = [];
@@ -99,8 +145,6 @@ export function buildSections(input: SectionsInput): Section[] {
       id: PINNED_SECTION_ID,
       name: "Pinned",
       kind: "pinned",
-      projectId: null,
-      bucket: null,
       roots: pinnedRoots,
       threadCount: countRows(pinnedRoots),
       showProject: true,
@@ -108,61 +152,92 @@ export function buildSections(input: SectionsInput): Section[] {
     });
   }
 
-  const groups =
-    wanted.size === 0
-      ? tree.projects
-      : tree.projects.filter((group) => wanted.has(group.projectId));
-
   if (groupBy === "status") {
     const byBucket = new Map<StatusBucket, ThreadNode[]>();
-    for (const group of groups) {
-      for (const node of group.roots) push(byBucket, bucketOf(node), node);
+    for (const group of tree.projects) {
+      for (const node of group.roots) {
+        if (keep(node)) push(byBucket, bucketOf(node), node);
+      }
     }
     for (const node of finishedPins) push(byBucket, bucketOf(node), node);
-    // All five, in a fixed order, even when empty: the list is the workflow,
+    // All buckets, in a fixed order, even when empty: the list is the workflow,
     // and a bucket that only appears once something lands in it reads as the
-    // sidebar reshuffling itself.
+    // sidebar reshuffling itself. Archived follows the view option.
     for (const bucket of STATUS_BUCKETS) {
+      if (hidden(bucket.key)) continue;
       sections.push(statusSection(bucket.key, byBucket.get(bucket.key) ?? [], tree));
     }
     return sections;
   }
 
   // Pull the parked threads out of every project first; what is left is the
-  // active list, grouped by project.
+  // active list, grouped by folder project first, then by bb project.
   const parked = new Map<StatusBucket, ThreadNode[]>();
-  for (const group of groups) {
+  const inFolders = new Map<string, ThreadNode[]>();
+  const projectSections: Section[] = [];
+  for (const group of tree.projects) {
     const active = group.roots.filter((node) => {
+      if (!keep(node)) return false;
       const bucket = bucketOf(node);
-      if (!PARKED_BUCKETS.includes(bucket)) return true;
-      push(parked, bucket, node);
+      if (PARKED_BUCKETS.includes(bucket)) {
+        push(parked, bucket, node);
+        return false;
+      }
+      const folder = folderOf(node);
+      if (folder === null) return true;
+      push(inFolders, folder, node);
       return false;
     });
-    sections.push(projectSection(group, active));
+    if (!wants(group.projectId)) continue;
+    projectSections.push(projectSection(group, active));
   }
+  for (const folder of folderProjects) {
+    const roots = inFolders.get(folder.id) ?? [];
+    if (roots.length > 0 || wants(folderKey(folder.id))) {
+      sections.push(folderSection(folder, roots, tree));
+    }
+  }
+  sections.push(...projectSections);
   for (const node of finishedPins) push(parked, bucketOf(node), node);
 
   // An empty pile stays off the list, except during a drag, when it is the
   // only place a thread can be filed — the same reason Pinned stays up.
   for (const bucket of PARKED_BUCKETS) {
     const nodes = parked.get(bucket) ?? [];
-    if (nodes.length === 0 && !dragging) continue;
+    if (hidden(bucket) || (nodes.length === 0 && !dragging)) continue;
     sections.push(statusSection(bucket, nodes, tree));
   }
   return sections;
 }
 
-function projectSection(group: ProjectGroup, roots: ThreadNode[]): Section {
+function projectSection(group: ProjectGroup, roots: ThreadNode[]): ProjectSection {
   return {
     id: projectSectionId(group.projectId),
     name: group.name,
     kind: "project",
     projectId: group.projectId,
-    bucket: null,
     roots,
     threadCount: countRows(roots),
     showProject: false,
     manual: group.manual,
+  };
+}
+
+function folderSection(
+  folder: FolderProject,
+  nodes: readonly ThreadNode[],
+  tree: ResolvedTree,
+): FolderSection {
+  const roots = orderBucket(nodes, tree.orderIndex, tree.promptedAt);
+  return {
+    id: folderKey(folder.id),
+    name: folder.name,
+    kind: "folder",
+    projectId: folderKey(folder.id),
+    roots,
+    threadCount: countRows(roots),
+    showProject: false,
+    manual: roots.some((node) => tree.orderIndex.has(`thread:${node.thread.id}`)),
   };
 }
 
@@ -176,13 +251,12 @@ function statusSection(
   bucket: StatusBucket,
   nodes: readonly ThreadNode[],
   tree: ResolvedTree,
-): Section {
+): StatusSection {
   const roots = orderBucket(nodes, tree.orderIndex, tree.promptedAt);
   return {
     id: statusSectionId(bucket),
     name: STATUS_LABEL[bucket],
     kind: "status",
-    projectId: null,
     bucket,
     roots,
     threadCount: countRows(roots),

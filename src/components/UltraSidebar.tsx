@@ -39,22 +39,34 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   buildSections,
   GROUP_BY_OPTIONS,
+  projectKeyOf,
+  projectOrder,
   visibleThreadIds,
+  type FolderSection,
   type GroupBy,
+  type ProjectSection,
   type Section,
 } from "@/lib/sections";
 import { ViewOptions } from "./ViewOptions";
 import { SidebarFilters } from "./SidebarFilters";
 import { useSidebarFilters } from "@/hooks/useSidebarFilters";
 import {
-  COMPACT_ROWS_KEY,
   GROUP_BY_KEY,
   PROJECT_ICONS_KEY,
   usePersistedChoice,
   COLLAPSED_SECTIONS_KEY,
   EXPANDED_SUBTREES_KEY,
   ROW_DETAILS_KEY,
+  EMPTY_PROJECTS_OPEN_KEY,
+  ROW_LAYOUT_KEY,
+  ROW_LAYOUTS,
+  legacyRowLayout,
+  type RowLayout,
+  CARD_DETAILS_KEY,
+  CARD_DETAIL_KEYS,
+  HOVER_CARD_KEY,
   usePersistedDetails,
+  usePersistedSwitches,
   usePersistedFlag,
   usePersistedSet,
 } from "@/hooks/useViewState";
@@ -65,19 +77,18 @@ import {
 } from "./sidebar-context";
 import { DragStateProvider } from "./drag-state-context";
 import { SidebarDock } from "./SidebarDock";
-import { SidebarSection } from "./SidebarSection";
-import {
-  isFinished,
-  isManualStatus,
-  statusBucket,
-  type ManualStatus,
-} from "@/lib/status";
+import { EmptyProjects, SidebarSection } from "./SidebarSection";
+import type { ManualStatus } from "@/lib/status";
 import { revealPaths } from "@/lib/reveal-path";
 import { revealRow } from "@/lib/reveal-row";
 import { containsThread } from "@/lib/contains-thread";
 import { moveOptionsFor } from "@/lib/move-targets";
 import { previewRoots, SECTION_PREVIEW_SIZE } from "@/lib/section-preview";
 import { useSectionPreviews } from "@/hooks/useSectionPreviews";
+import { useProjectStyles } from "@/hooks/useProjectStyles";
+import { folderIdOf, folderKey, folderProjectFor, folderSuggestions, newFolderKey } from "@/lib/project-styles";
+import { ProjectDialog, type ProjectEditTarget } from "./ProjectDialog";
+import { bucketOfThread } from "./ThreadStatus";
 
 /**
  * bb's own row actions: open with its split and focus rules, pin, read
@@ -100,22 +111,51 @@ const useSidebarThreadActions = (
   pluginApp as unknown as { experimental_useSidebarThreadActions: () => SidebarThreadActions }
 ).experimental_useSidebarThreadActions;
 
+const ACTIVE_THREADS = { experimental_lifecycles: ["active"] } as const;
+const ACTIVE_AND_ARCHIVED_THREADS = { experimental_lifecycles: ["active", "archived"] } as const;
+
 export function UltraSidebar(props: PluginThreadListProps) {
   const { activeThreadId, onNavigate } = props;
-  const host = experimental_useSidebarThreads();
+  const [showArchived, setShowArchived] = useState(false);
+  const host = experimental_useSidebarThreads(showArchived ? ACTIVE_AND_ARCHIVED_THREADS : ACTIVE_THREADS);
   const hostThreadsRef = useRef(host.threads);
   hostThreadsRef.current = host.threads;
   const workflowAgents = useWorkflowAgents(host.threads);
   const threads = useMemo(() => withWorkflowThreads(host.threads, workflowAgents), [host.threads, workflowAgents]);
   const threadActions = useSidebarThreadActions();
+  const sdk = pluginApp.useSdk();
   const store = useSidebarStore();
+  const doneQueue = useRef<string[]>([]);
+  /**
+   * Archives threads marked done, gathered per tick. One thread goes through
+   * bb's archive with its child-count confirmation. Several go to the SDK one
+   * request each: bb's archive aborts its previous call.
+   */
+  const archiveDone = (threadId: string) => {
+    doneQueue.current.push(threadId);
+    if (doneQueue.current.length > 1) return;
+    queueMicrotask(() => {
+      const ids = doneQueue.current;
+      doneQueue.current = [];
+      if (ids.length === 1) return threadActions.archive(ids[0]!);
+      for (const id of ids) {
+        sdk.threads.archive({ threadId: id }).catch((error: unknown) => {
+          toast.error(`Couldn't archive: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+    });
+  };
 
   const providers = experimental_useProviders();
   const collapsedSections = usePersistedSet(COLLAPSED_SECTIONS_KEY);
   const expandedSubtrees = usePersistedSet(EXPANDED_SUBTREES_KEY);
-  const [compactRows, setCompactRows] = usePersistedFlag(COMPACT_ROWS_KEY, true);
+  const [legacyLayout] = useState(legacyRowLayout);
+  const [rowLayout, setRowLayout] = usePersistedChoice<RowLayout>(ROW_LAYOUT_KEY, legacyLayout, ROW_LAYOUTS);
   const [projectIcons, setProjectIcons] = usePersistedFlag(PROJECT_ICONS_KEY, true);
-  const [showArchived, setShowArchived] = useState(false);
+  const projectStyles = useProjectStyles();
+  const [editingProject, setEditingProject] = useState<ProjectEditTarget | null>(null);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [emptyProjectsOpen, setEmptyProjectsOpen] = usePersistedFlag(EMPTY_PROJECTS_OPEN_KEY, false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   // Status is the default workflow; an explicit saved project preference wins.
   const [groupBy, setGroupBy] = usePersistedChoice<GroupBy>(
@@ -124,7 +164,9 @@ export function UltraSidebar(props: PluginThreadListProps) {
     GROUP_BY_OPTIONS,
   );
   const filters = useSidebarFilters();
-  const [rowDetails, setRowDetail] = usePersistedDetails(ROW_DETAILS_KEY);
+  const [rowDetails, setRowDetail, replaceRowDetails] = usePersistedDetails(ROW_DETAILS_KEY);
+  const [cardDetails, setCardDetail] = usePersistedSwitches(CARD_DETAILS_KEY, CARD_DETAIL_KEYS);
+  const [hoverCard, setHoverCard] = usePersistedFlag(HOVER_CARD_KEY, true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // The clock the resolver compares snoozes against. It only moves when a
@@ -194,7 +236,10 @@ export function UltraSidebar(props: PluginThreadListProps) {
   const availableProjects = [...host.projects].sort((a, b) =>
     a.name.localeCompare(b.name),
   );
-  const knownProjectIds = new Set(host.projects.map(project => project.id));
+  const knownProjectIds = new Set([
+    ...host.projects.map(project => project.id),
+    ...projectStyles.folderProjects.map(project => folderKey(project.id)),
+  ]);
   const projectIds = filters.projectIds.filter(id => knownProjectIds.has(id));
   const hasFilters = projectIds.length > 0;
   const previews = useSectionPreviews(JSON.stringify([groupBy, projectIds, showArchived]));
@@ -301,6 +346,15 @@ export function UltraSidebar(props: PluginThreadListProps) {
   // Folder paths for the badges' tooltips and links; fetched once per
   // environment and kept.
   const locations = useEnvironmentLocations(allRoots);
+  const folderIdOfThread = useCallback(
+    (thread: PluginSidebarThread): string | null => {
+      const environmentId = thread.environment?.id;
+      const location = environmentId == null ? undefined : locations.get(environmentId);
+      if (location === undefined) return null;
+      return folderProjectFor(location.path, projectStyles.folderProjects)?.id ?? null;
+    },
+    [locations, projectStyles.folderProjects],
+  );
 
   // Assigned below, once the sections are built: the drop callbacks read it
   // rather than closing over a snapshot, so a drop always measures the list
@@ -310,6 +364,12 @@ export function UltraSidebar(props: PluginThreadListProps) {
 
   const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
+  const [jiraSite, setJiraSite] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    rpc.call("jira.site", null).then((site) => { if (live) setJiraSite(site); }, () => {});
+    return () => { live = false; };
+  }, [rpc]);
   // The host owns the pin, so bb's own sidebar and this one never disagree
   // about which threads are pinned.
   const setPinned = useCallback(
@@ -378,9 +438,7 @@ export function UltraSidebar(props: PluginThreadListProps) {
   const applyDrop = ({ source, resolution, side }: DropOutcome) =>
     store.batch("Order changed", () => {
       if (source.kind === "project") {
-        const ordered = sectionsRef.current
-          .map((section) => section.projectId)
-          .filter((id): id is string => id !== null);
+        const ordered = projectOrder(sectionsRef.current);
         if (resolution.anchorRefId === null) return;
         store.reorderGroup(
           "project",
@@ -395,13 +453,8 @@ export function UltraSidebar(props: PluginThreadListProps) {
 
       if (resolution.pin !== null) setPinned(source.refId, resolution.pin);
       if (resolution.bucket !== null) {
-        // Only the parked statuses can be set by hand; landing on In
-        // progress or In review clears the manual status and lets the pull
-        // request decide again.
-        store.setStatus(
-          [source.refId],
-          isManualStatus(resolution.bucket) ? resolution.bucket : null,
-        );
+        // Landing on In progress clears the manual status.
+        store.setStatus([source.refId], null);
       }
 
       const ids = sectionRowIds(resolution.sectionId);
@@ -434,19 +487,20 @@ export function UltraSidebar(props: PluginThreadListProps) {
   const nudge = (item: ItemRef, direction: -1 | 1) =>
     store.batch("Order changed", () => {
       if (item.kind === "project") {
-        const ordered = sectionsRef.current
-          .map((section) => section.projectId)
-          .filter((id): id is string => id !== null);
-        const index = ordered.indexOf(item.refId);
+        // The neighbor is the next heading on screen. The stored order still
+        // covers the hidden empty projects.
+        const ordered = projectOrder(sectionsRef.current);
+        const shown = projectOrder(sectionsRef.current.filter((section) => !isEmptyProject(section)));
+        const index = shown.indexOf(item.refId);
         if (index === -1) return;
-        const neighbour = ordered[index + direction];
-        if (neighbour === undefined) return;
+        const neighbor = shown[index + direction];
+        if (neighbor === undefined) return;
         store.reorderGroup(
           "project",
           moveId(
             ordered,
             item.refId,
-            neighbour,
+            neighbor,
             direction < 0 ? "before" : "after",
           ),
         );
@@ -456,14 +510,14 @@ export function UltraSidebar(props: PluginThreadListProps) {
         const ids = section.roots.map((root) => root.thread.id);
         const index = ids.indexOf(item.refId);
         if (index === -1) continue;
-        const neighbour = ids[index + direction];
-        if (neighbour === undefined) return;
+        const neighbor = ids[index + direction];
+        if (neighbor === undefined) return;
         store.reorderGroup(
           "thread",
           moveId(
             ids,
             item.refId,
-            neighbour,
+            neighbor,
             direction < 0 ? "before" : "after",
           ),
         );
@@ -478,6 +532,11 @@ export function UltraSidebar(props: PluginThreadListProps) {
     store.resetOrder("thread", ids);
   };
 
+  // Project headings with no threads fold into Empty projects, outside a filter or drag.
+  const isEmptyProject = (section: Section): section is ProjectSection | FolderSection =>
+    !hasFilters && !dnd.state.active &&
+    (section.kind === "project" || section.kind === "folder") && section.threadCount === 0;
+
   const sections = useMemo(
     () =>
       buildSections({
@@ -485,13 +544,12 @@ export function UltraSidebar(props: PluginThreadListProps) {
         groupBy,
         projectIds,
         dragging: dnd.state.active,
-        bucketOf: (node) =>
-          statusBucket(
-            manualStatusById.get(node.thread.id) ?? null,
-            pullRequests.get(node.thread.id),
-          ),
+        showArchived,
+        folderProjects: projectStyles.folderProjects,
+        folderOf: (node) => folderIdOfThread(node.thread),
+        bucketOf: (node) => bucketOfThread(node.thread, pullRequests.get(node.thread.id)),
       }),
-    [tree, groupBy, projectIds.join(","), dnd.state.active, manualStatusById, pullRequests],
+    [tree, groupBy, projectIds.join(","), dnd.state.active, showArchived, pullRequests, projectStyles.folderProjects, folderIdOfThread],
   );
   sectionsRef.current = sections;
 
@@ -529,18 +587,32 @@ export function UltraSidebar(props: PluginThreadListProps) {
   ]);
 
   // The model only exists behind an RPC, so it is fetched only while shown.
-  const executions = useThreadExecution(visibleThreads, compactRows || rowDetails.model);
+  const executions = useThreadExecution(visibleThreads, rowLayout !== "detailed" || rowDetails.model);
   // Fetch working changes for the rows on screen.
   const threadDiffs = useThreadDiffs(visibleThreads);
 
+  const projectNameOf = (projectKey: string) => {
+    const folderId = folderIdOf(projectKey);
+    if (folderId === null) return projectNameById.get(projectKey) ?? "";
+    return projectStyles.folderProjects.find(project => project.id === folderId)?.name ?? "";
+  };
+
   const contextValue: SidebarContextValue = {
     activeThreadId,
-    compactRows,
+    rowLayout,
     rowDetails,
-    projectNameOf: (projectId: string) =>
-      projectNameById.get(projectId) ?? "",
+    hoverCard,
+    cardDetails,
+    jiraSite,
+    projectNameOf,
     artworkOf: (projectId: string) =>
       projectArtwork.get(projectId) ?? null,
+    styleOf: (projectKey: string) => projectStyles.styles[projectKey] ?? null,
+    folderKeyOf: (thread) => {
+      const id = folderIdOfThread(thread);
+      return id === null ? null : folderKey(id);
+    },
+    editProject: (key) => setEditingProject({ key, initialName: "" }),
     locationOf: (environmentId: string) =>
       locations.get(environmentId) ?? null,
     openFolder,
@@ -560,10 +632,8 @@ export function UltraSidebar(props: PluginThreadListProps) {
     },
     setPinned: (threadId: string, pinned: boolean) => {
       setPinned(threadId, pinned);
-      // A finished thread is never shown pinned (see buildSections), so
-      // pinning one reopens it rather than leaving it where it was.
-      const manual = manualStatusById.get(threadId);
-      if (pinned && manual !== undefined && isFinished(manual)) {
+      // Pinning clears a hand-filed status.
+      if (pinned && manualStatusById.has(threadId)) {
         store.setStatus([threadId], null);
       }
     },
@@ -652,7 +722,7 @@ export function UltraSidebar(props: PluginThreadListProps) {
     // the child threads, so there is no silent delete here by design.
     deleteThread: (threadId) => threadActions.requestDelete(threadId),
     newThreadIn: (projectId) => {
-      threadActions.openNewThread({ projectId, focusPrompt: true });
+      threadActions.openNewThread({ ...(projectId === null ? {} : { projectId }), focusPrompt: true });
       onNavigate();
     },
     nudge,
@@ -665,6 +735,7 @@ export function UltraSidebar(props: PluginThreadListProps) {
       manualStatusById.get(threadId) ?? null,
     setStatus: (threadId: string, status: ManualStatus | null) => {
       store.setStatus([threadId], status);
+      if (status === "done") archiveDone(threadId);
       // Filing a pinned thread away unpins it, exactly as dragging it onto
       // a parked heading does: a pin says "this is what I'm on", and a
       // finished thread holding the top of the list says the opposite.
@@ -705,7 +776,7 @@ export function UltraSidebar(props: PluginThreadListProps) {
       ),
     );
   };
-  // Ultra Launcher, when installed, claims New thread by cancelling this
+  // Ultra Launcher, when installed, claims New thread by canceling this
   // event (its lib/contract.ts names it); otherwise bb's own composer opens.
   const openNewThread = () => {
     const event = new Event("ultra-launcher:open", { cancelable: true });
@@ -715,8 +786,8 @@ export function UltraSidebar(props: PluginThreadListProps) {
 
   const sectionIds = sections.map((section) =>
     sortableId({
-      kind: section.projectId === null ? "section" : "project",
-      refId: section.projectId ?? section.id,
+      kind: projectKeyOf(section) === null ? "section" : "project",
+      refId: projectKeyOf(section) ?? section.id,
       sectionId: section.id,
     }),
   );
@@ -747,31 +818,28 @@ export function UltraSidebar(props: PluginThreadListProps) {
                 <div className="bb-ws-toolbar sticky top-0 z-10 flex items-center gap-0.5 bg-sidebar px-1 py-1.5">
                       <SidebarFilters
                         projects={availableProjects}
+                        folderProjects={projectStyles.folderProjects.map(project => ({ key: folderKey(project.id), name: project.name }))}
                         projectIds={projectIds}
                         onProjectsChange={filters.setProjects}
+                        onNewFolderProject={() => setEditingProject({ key: newFolderKey(), initialName: "" })}
                       />
-                      <button
-                        type="button"
-                        aria-label="New thread"
-                        title="New thread"
-                        className="mr-1 flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={openNewThread}
-                      >
-                        <Icon name="Plus" className="size-3.5" />
-                        <span className="bb-ws-new-thread-label">New thread</span>
-                      </button>
                       <SelectionToggle />
                       <ViewOptions
                         open={viewOptionsOpen}
                         onOpenChange={setViewOptionsOpen}
                         groupBy={groupBy}
                         onGroupByChange={setGroupBy}
-                        compactRows={compactRows}
-                        onCompactRowsChange={setCompactRows}
+                        rowLayout={rowLayout}
+                        onRowLayoutChange={setRowLayout}
                         projectIcons={projectIcons}
                         onProjectIconsChange={setProjectIcons}
                         rowDetails={rowDetails}
                         onRowDetailChange={setRowDetail}
+                        onRowDetailsReplace={replaceRowDetails}
+                        hoverCard={hoverCard}
+                        onHoverCardChange={setHoverCard}
+                        cardDetails={cardDetails}
+                        onCardDetailChange={setCardDetail}
                         showArchived={showArchived}
                         onShowArchivedChange={setShowArchived}
                         onCollapseAll={collapseAll}
@@ -792,7 +860,7 @@ export function UltraSidebar(props: PluginThreadListProps) {
                   items={sectionIds}
                   strategy={verticalListSortingStrategy}
                 >
-                  {previewSections.map(({ section, roots, hasLoadedMore }) => (
+                  {previewSections.filter(({ section }) => !isEmptyProject(section)).map(({ section, roots, hasLoadedMore }) => (
                     <SidebarSection
                       key={section.id}
                       section={section}
@@ -806,6 +874,32 @@ export function UltraSidebar(props: PluginThreadListProps) {
                   ))}
                 </SortableContext>
 
+                <EmptyProjects
+                  sections={sections.filter(isEmptyProject)}
+                  open={emptyProjectsOpen}
+                  onOpenChange={setEmptyProjectsOpen}
+                />
+
+                <form
+                  className="flex items-center gap-1.5 rounded-md px-1 py-1 text-xs text-muted-foreground focus-within:text-foreground"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const name = newProjectName.trim();
+                    if (name === "") return;
+                    setEditingProject({ key: newFolderKey(), initialName: name });
+                    setNewProjectName("");
+                  }}
+                >
+                  <Icon name="Plus" className="size-3.5 shrink-0" />
+                  <input
+                    aria-label="New project"
+                    placeholder="New project"
+                    value={newProjectName}
+                    onChange={(event) => setNewProjectName(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                  />
+                </form>
+
                 {sections.every(section => section.threadCount === 0) && (
                   <div className="px-2 py-4 text-center text-xs text-muted-foreground" role="status">
                     <p>{hasFilters ? "No threads match these filters." : snoozedEntries.length > 0 ? "Everything is snoozed." : "No threads yet."}</p>
@@ -816,6 +910,13 @@ export function UltraSidebar(props: PluginThreadListProps) {
               </div>
               <SidebarDock snoozed={snoozedEntries} projectIds={scheduledProjectIds} />
               </div>
+              <ProjectDialog
+                target={editingProject}
+                onClose={() => setEditingProject(null)}
+                styles={projectStyles}
+                nameOf={projectNameOf}
+                suggestions={folderSuggestions([...locations.values()].map(location => location.path))}
+              />
             </SidebarInteractions>
           </TooltipProvider>
         </DragStateProvider>

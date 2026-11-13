@@ -1,9 +1,9 @@
 import { ThreadHandoff } from "./ThreadHandoff";
-import { ThreadModes } from "./ThreadModes";
+import { InlineModes, ThreadModes } from "./ThreadModes";
 import { ThreadDiffCounts, ThreadDiffsContext, ThreadFactsContext } from "./ThreadWorkSummary";
 import { Checkbox } from "./ui/checkbox";
 import { useSidebarSelection } from "./SidebarInteractions";
-import { memo, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
@@ -22,8 +22,8 @@ import { cn } from "@/lib/utils";
 import type { ThreadNode } from "@/lib/resolve";
 import { LEVEL_BADGE_FROM_DEPTH, ROW_BASE_PAD_PX, indentPx } from "@/lib/indent";
 import { useSidebar } from "./sidebar-context";
-import { StatusIcon } from "./StatusIcon";
-import { ThreadOrb, agentOrb } from "./ThreadOrb";
+import { BucketGlyph } from "./StatusIcon";
+import { agentOrb } from "./ThreadOrb";
 import { SubtreeSummary, subtreeLabel, subtreeTone } from "./SubtreeSummary";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { RowContextMenu } from "./RowContextMenu";
@@ -36,22 +36,52 @@ import { tomorrowMorning } from "./tomorrow-morning";
 import { prefetchPullRequestStack } from "./PullRequestStack";
 import {
   BranchBadge,
+  JiraBadge,
   ModelBadge,
   PullRequestBadge,
+  jiraKeyOf,
 } from "./MetaBadges";
-import { ThreadStatus, threadStatus } from "./ThreadStatus";
+import { ThreadStatus, bucketOfThread, isAttention, threadStatus } from "./ThreadStatus";
 import {
   PARKED_BUCKETS,
   STATUS_LABEL,
-  isFinished,
-  statusBucket,
 } from "@/lib/status";
 
+/** The hover card opens on pointer enter. A drag turns it off. */
+const DETAILS_OPEN_DELAY_MS = 0;
+const DETAILS_CLOSE_DELAY_MS = 180;
+
 /**
- * Long enough that dragging across rows, or just moving the pointer to
- * something else, never triggers it.
+ * Id of the one open hover card in the sidebar. Opening a card closes the
+ * previous one. A pointer leave closes it here, as Radix stalls during any text selection.
  */
-const DETAILS_OPEN_DELAY_MS = 700;
+let openCard: string | null = null;
+let closeTimer: ReturnType<typeof setTimeout> | undefined;
+const cardListeners = new Set<() => void>();
+
+function showCard(id: string | null) {
+  clearTimeout(closeTimer);
+  if (openCard === id) return;
+  openCard = id;
+  for (const listener of cardListeners) listener();
+}
+
+function closeCard(id: string) {
+  if (openCard === id) showCard(null);
+}
+
+function closeCardSoon(id: string) {
+  if (openCard !== id) return;
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => closeCard(id), DETAILS_CLOSE_DELAY_MS);
+}
+
+function subscribeCard(listener: () => void) {
+  cardListeners.add(listener);
+  return () => {
+    cardListeners.delete(listener);
+  };
+}
 
 /**
  * A hover-only action in the row's trailing slot, after T3's sidebar: a
@@ -114,16 +144,21 @@ function RowHover({
   onWarm?: () => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const id = useId();
+  const open = useSyncExternalStore(subscribeCard, () => openCard === id);
   useEffect(() => {
-    if (!enabled) setOpen(false);
-  }, [enabled]);
+    if (!enabled) closeCard(id);
+  }, [enabled, id]);
+  useEffect(() => () => closeCard(id), [id]);
+  const leave = (event: { pointerType: string }) => {
+    if (event.pointerType !== "touch") closeCardSoon(id);
+  };
   return (
     <HoverCard
       open={enabled && open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => (next ? showCard(id) : closeCard(id))}
       openDelay={DETAILS_OPEN_DELAY_MS}
-      closeDelay={180}
+      closeDelay={DETAILS_CLOSE_DELAY_MS}
     >
       <HoverCardTrigger asChild>
         <span
@@ -132,6 +167,7 @@ function RowHover({
             // A touch never opens the card, so it has nothing to warm.
             if (enabled && event.pointerType !== "touch") onWarm?.();
           }}
+          onPointerLeave={leave}
         >
           {children}
         </span>
@@ -141,7 +177,9 @@ function RowHover({
         onClick={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
         onPointerDown={event => event.stopPropagation()}
-        onContextMenu={event => event.stopPropagation()}>
+        onContextMenu={event => event.stopPropagation()}
+        onPointerEnter={() => showCard(id)}
+        onPointerLeave={leave}>
 
         {details}
       </HoverCardContent>
@@ -173,7 +211,6 @@ export const ThreadRow = memo(function ThreadRow({
   const execution = executions.get(thread.id);
   const pullRequest = pullRequests.get(thread.id);
   const manualStatus = sidebar.manualStatusOf(thread.id);
-  const bucket = statusBucket(manualStatus, pullRequest);
   const diff = useContext(ThreadDiffsContext).get(thread.id);
   const diffCounts = diff && (diff.additions > 0 || diff.deletions > 0)
     ? <ThreadDiffCounts diff={diff} /> : null;
@@ -182,7 +219,8 @@ export const ThreadRow = memo(function ThreadRow({
   const isExpanded = sidebar.isSubtreeExpanded(thread.id);
   const hasChildren = node.children.length > 0;
 
-  const compact = sidebar.compactRows;
+  const inline = sidebar.rowLayout === "single";
+  const compact = sidebar.rowLayout !== "detailed";
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [modeDetailsOpen, setModeDetailsOpen] = useState(false);
   const [draftTitle, setDraftTitle] = useState<string | null>(null);
@@ -250,7 +288,8 @@ export const ThreadRow = memo(function ThreadRow({
   // From the thread, not the section: a status bucket and the Pinned list are
   // named after themselves, so their rows have to name their own project.
   // Under a project heading they do not — it would only repeat it.
-  const projectName = sidebar.projectNameOf(thread.projectId);
+  const projectKey = sidebar.folderKeyOf(thread) ?? thread.projectId;
+  const projectName = sidebar.projectNameOf(projectKey);
   const project =
     details.project && showProject && projectName !== "" ? projectName : null;
   const branch = details.branch
@@ -259,6 +298,19 @@ export const ThreadRow = memo(function ThreadRow({
   const machine = details.machine ? (thread.host?.name ?? null) : null;
   const model = details.model ? (execution?.model ?? null) : null;
   const pr = details.pullRequest ? pullRequest : undefined;
+  const jira = details.jira && sidebar.jiraSite !== null
+    ? jiraKeyOf(thread.environment?.branchName, pullRequest?.title, thread.title)
+    : null;
+  const jiraBadge = jira === null ? null : (
+    <JiraBadge ticket={jira} onOpen={() => sidebar.openUrl(`${sidebar.jiraSite}/browse/${jira}`)} />
+  );
+  const prBadge = pr === undefined ? null : (
+    <PullRequestBadge pullRequest={pr} onOpen={() => sidebar.openUrl(pr.url)} />
+  );
+  // PR and ticket links at full width, ahead of the badges that truncate.
+  const links = prBadge === null && jiraBadge === null ? null : (
+    <span className="flex shrink-0 items-center gap-1.5" data-thread-links="">{prBadge}{jiraBadge}</span>
+  );
   // An unregistered provider still gets its icon, drawn from the id alone.
   const agent = details.agent ? (provider ?? { id: thread.providerId }) : null;
   // The checkout behind the folder and branch badges, once the server has
@@ -272,10 +324,11 @@ export const ThreadRow = memo(function ThreadRow({
   const hasMeta =
     branch !== null ||
     model !== null ||
-    pr !== undefined;
+    pr !== undefined ||
+    jira !== null;
 
-  const needsAttention =
-    status?.tone === "needs-you" || status?.tone === "problem";
+  const needsAttention = isAttention(status);
+  const bucket = bucketOfThread(thread, pullRequest);
   // The turn itself ended in an error (not a PR problem): bb can re-run it.
   const failed = thread.indicator === "unread-error";
   const hasPrOutcome = pullRequest?.state === "closed" || pullRequest?.state === "merged";
@@ -283,6 +336,23 @@ export const ThreadRow = memo(function ThreadRow({
     status !== null && (hasPrOutcome || (status.tone !== "idle" && status.tone !== "done")) &&
     status.text !== STATUS_LABEL[bucket] &&
     thread.indicator !== "goal" && thread.indicator !== "plan-mode";
+  const showStatus = details.status && !needsInput && (needsAttention || showRowStatus);
+  const changes = details.changes ? diffCounts : null;
+  const agentIcon = agent === null ? null : (
+    <RowTip label={[provider?.displayName ?? thread.providerId, execution?.model].filter(Boolean).join(" · ")}>
+      <span className="flex shrink-0 items-center text-muted-foreground" data-thread-provider-logo="">
+        <ProviderIcon providerKind="agent" provider={agent} className="size-3 shrink-0 opacity-80" />
+      </span>
+    </RowTip>
+  );
+  const projectChip = project === null ? null : (
+    <RowTip label={`Project · ${project}`}>
+      <span data-thread-project="" className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
+        <ProjectIcon projectId={projectKey} className="size-3" />
+        <span className="min-w-0 truncate">{project}</span>
+      </span>
+    </RowTip>
+  );
   const threadDetails = (
     <ThreadDetails
       node={node}
@@ -337,19 +407,10 @@ export const ThreadRow = memo(function ThreadRow({
           onActivate={() => sidebar.setSnoozed(thread.id, tomorrowMorning())}
         />
       )}
-      {/* Every row can be finished or unfinished, a backlog row included —
-          this is the pointer twin of D, and the two agree on which way it
-          goes. Reopen hands the thread back to its own pull request. */}
-      {isFinished(bucket) ? (
+      {/* The pointer twin of D: Done archives the thread. */}
+      {thread.isArchived ? null : (
         <ParkButton
-          label="Reopen"
-          icon="Spinner"
-          text={compact ? undefined : "Reopen"}
-          onActivate={() => sidebar.setStatus(thread.id, null)}
-        />
-      ) : (
-        <ParkButton
-          label="Mark done"
+          label="Mark done and archive"
           icon="Check"
           text={compact ? undefined : "Done"}
           onActivate={() => sidebar.setStatus(thread.id, "done")}
@@ -406,7 +467,7 @@ export const ThreadRow = memo(function ThreadRow({
           data-sidebar-thread-expanded={
             hasChildren ? String(isExpanded) : undefined
           }
-          data-thread-layout={compact ? "compact" : "detailed"}
+          data-thread-layout={inline ? "single" : compact ? "compact" : "detailed"}
           data-attention={needsAttention}
           data-selected={selection.selected.has(thread.id)}
           aria-current={isActive ? "page" : undefined}
@@ -437,7 +498,7 @@ export const ThreadRow = memo(function ThreadRow({
           style={{ paddingLeft: `${ROW_BASE_PAD_PX + indent}px` }}
         >
           <RowHover
-            enabled={draftTitle === null && !isDragActive && !handoffOpen && !modeDetailsOpen && !selection.active}
+            enabled={sidebar.hoverCard && !leaving && draftTitle === null && !isDragActive && !handoffOpen && !modeDetailsOpen && !selection.active}
             onWarm={() => prefetchPullRequestStack(thread.id)}
             details={threadDetails}
           >
@@ -476,7 +537,7 @@ export const ThreadRow = memo(function ThreadRow({
               {/* Past the point where the per-level step reaches its 4px
                   floor, indent alone is a weak answer to "how deep am I".
                   It sits after the chevron on purpose: the rails are aimed
-                  at the chevron's centre, so nothing may shift it. */}
+                  at the chevron's center, so nothing may shift it. */}
               {node.depth >= LEVEL_BADGE_FROM_DEPTH ? (
                 <span
                   title={`Level ${node.depth + 1}`}
@@ -486,40 +547,8 @@ export const ThreadRow = memo(function ThreadRow({
                 </span>
               ) : null}
 
-              <span className="flex shrink-0 items-center">
-                {needsInput ? (
-                  <RowTip label="Waiting for your input">
-                    <span className="flex shrink-0 items-center ws-tone-attention">
-                      <Icon name="CornerDownLeft" aria-hidden className="size-3.5 shrink-0" />
-                    </span>
-                  </RowTip>
-                ) : orb !== null ? (
-                  <RowTip label={orb.label}>
-                    <span className="flex shrink-0 items-center">
-                      <ThreadOrb orb={orb} />
-                    </span>
-                  </RowTip>
-                ) : (
-                  <RowTip
-                    label={
-                      status?.detail ??
-                      thread.indicatorLabel ??
-                      "Nothing to report"
-                    }
-                  >
-                    <span className="flex shrink-0 items-center">
-                      <StatusIcon
-                        tone={status?.tone ?? "idle"}
-                        label={
-                          status?.detail ?? thread.indicatorLabel ?? undefined
-                        }
-                        className="size-3.5 shrink-0"
-                      />
-                    </span>
-                  </RowTip>
-                )}
-              </span>
-              <span className="relative flex min-w-0 flex-1 items-center">
+              {inline ? agentIcon : null}
+              <span className={cn("relative flex flex-1 items-center", inline ? "min-w-[5rem]" : "min-w-0")}>
                 {draftTitle === null ? (
                   orb !== null ? (
                     <TextShimmer
@@ -564,12 +593,24 @@ export const ThreadRow = memo(function ThreadRow({
                 {compact ? rowActions : null}
               </span>
 
-              {needsInput ? (
-                <RowTip label={thread.indicatorLabel ?? "Waiting on an approval or an answer"}>
-                  <span className="bb-ws-your-turn inline-flex shrink-0 items-center whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-semibold leading-4">
-                    Your turn
-                  </span>
-                </RowTip>
+              {inline && draftTitle === null ? links : null}
+
+              {inline && draftTitle === null ? (
+                <span className="flex min-w-0 max-w-[40%] shrink items-center gap-1.5 overflow-hidden text-[11px] text-muted-foreground" data-thread-inline="">
+                  {branch === null ? null : (
+                    <BranchBadge branch={branch} folder={folder} onOpenFolder={openFolder} />
+                  )}
+                  {projectChip}
+                  {model === null ? null : <ModelBadge model={model} />}
+                  <MachineIndicator name={machine} />
+                  {details.modes ? <InlineModes thread={thread} /> : null}
+                  {showStatus ? (
+                    <span className="min-w-0 truncate">
+                      <ThreadStatus status={status} updatedAt={thread.updatedAt} sectionLabel={sectionLabel} />
+                    </span>
+                  ) : null}
+                  {changes}
+                </span>
               ) : null}
 
               {thread.isPinned ? (
@@ -595,35 +636,30 @@ export const ThreadRow = memo(function ThreadRow({
               ) : null}
 
               {compact ? null : rowActions}
+
+              <RowTip label={status?.detail ?? thread.indicatorLabel ?? STATUS_LABEL[bucket]}>
+                <span className="flex w-4 shrink-0 justify-center" data-thread-status-glyph="">
+                  <BucketGlyph bucket={bucket} running={orb !== null} />
+                </span>
+              </RowTip>
             </span>
 
-            {draftTitle === null ? (
+            {draftTitle === null && !inline ? (
               <ThreadModes
                 thread={thread}
                 compact={compact}
                 details={threadDetails}
                 onDetailsOpenChange={setModeDetailsOpen}
-                trailing={diffCounts}
+                trailing={changes}
+                showModes={details.modes}
               >
                 <span className="inline-flex min-w-0 max-w-full items-center gap-1" data-thread-context="">
-                  {agent === null ? null : (
-                    <RowTip label={[provider?.displayName ?? thread.providerId, execution?.model].filter(Boolean).join(" · ")}>
-                      <span className="flex shrink-0 items-center text-muted-foreground" data-thread-provider-logo="">
-                        <ProviderIcon providerKind="agent" provider={agent} className="size-3 shrink-0 opacity-80" />
-                      </span>
-                    </RowTip>
-                  )}
-                  {project === null ? null : (
-                    <RowTip label={`Project · ${project}`}>
-                      <span data-thread-project="" className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
-                        <ProjectIcon projectId={thread.projectId} className="size-3" />
-                        <span className="min-w-0 truncate">{project}</span>
-                      </span>
-                    </RowTip>
-                  )}
+                  {agentIcon}
+                  {projectChip}
                   <MachineIndicator name={machine} />
                 </span>
-                {!needsInput && (needsAttention || showRowStatus) ? (
+                {compact ? links : null}
+                {showStatus ? (
                   <span className="min-w-0 max-w-full">
                     <ThreadStatus status={status} updatedAt={thread.updatedAt} sectionLabel={sectionLabel} />
                   </span>
@@ -644,12 +680,7 @@ export const ThreadRow = memo(function ThreadRow({
                 />
               )}
               {model === null ? null : <ModelBadge model={model} />}
-              {pr === undefined ? null : (
-                <PullRequestBadge
-                  pullRequest={pr}
-                  onOpen={() => sidebar.openUrl(pr.url)}
-                />
-              )}
+              {links}
             </span>
             ) : null}
           </RowHover>

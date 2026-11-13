@@ -175,14 +175,6 @@ export const PR_ATTENTION: Record<string, { text: string; className: string }> =
   none: { text: "Open", className: "text-muted-foreground" },
 };
 
-function prIcon(pullRequest: ThreadPullRequest): IconName {
-  if (pullRequest.state === "merged") return "CircleCheck";
-  if (pullRequest.state === "closed") return "CircleX";
-  if (pullRequest.attention === "checks_failed") return "AlertCircle";
-  if (pullRequest.attention === "conflicts") return "AlertTriangle";
-  return "FolderGit";
-}
-
 /**
  * Takes the pull request rather than fetching one: the lookup is batched on
  * the server now, so a row no longer pays a git-host round trip of its own.
@@ -197,7 +189,7 @@ export function PullRequestBadge({
   const attention = PR_ATTENTION[pullRequest.attention] ?? PR_ATTENTION.none!;
   return (
     <LinkBadge
-      icon={prIcon(pullRequest)}
+      icon="Github"
       label={`#${pullRequest.number}`}
       maxWidth="4rem"
       className={attention.className}
@@ -214,6 +206,22 @@ export function PullRequestBadge({
       onOpen={onOpen}
     />
   );
+}
+
+/** A ticket key such as ABC-1234: capitals, a dash, digits. */
+const JIRA_KEY = /(?<![A-Za-z0-9])[A-Z][A-Z0-9]+-\d+(?!\d)/;
+
+/** The first ticket key in the given texts, in order. */
+export function jiraKeyOf(...texts: (string | null | undefined)[]): string | null {
+  for (const text of texts) {
+    const match = text?.match(JIRA_KEY);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+export function JiraBadge({ ticket, onOpen }: { ticket: string; onOpen(): void }) {
+  return <LinkBadge icon="Jira" label={ticket} tip={`Jira · ${ticket}`} maxWidth="5.5rem" onOpen={onOpen} />;
 }
 
 /** "2m", "4h", "3d" — sidebar rows have no room for anything longer. */

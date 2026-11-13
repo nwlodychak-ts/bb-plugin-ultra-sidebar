@@ -82,7 +82,7 @@ function sectionsOf(
     tree,
     groupBy,
     projectIds,
-    bucketOf: () => statusBucket(null, undefined),
+    bucketOf: () => statusBucket(undefined, { working: true }),
   });
 }
 
@@ -415,7 +415,7 @@ describe("resolveTree", () => {
     expect(tree.snoozed.map((entry) => entry.thread.id)).toEqual(["b", "a"]);
   });
 
-  it("honours a hand-picked order, with never-dragged threads above it", () => {
+  it("honors a hand-picked order, with never-dragged threads above it", () => {
     // A thread nobody has placed is a new one, and a new thread belongs at
     // the top of the list rather than under everything already arranged.
     const tree = run(
@@ -435,7 +435,7 @@ describe("resolveTree", () => {
 });
 
 describe("buildSections", () => {
-  const bucketed = (byId: Record<string, "done" | "backlog">) => (node: {
+  const bucketed = (byId: Record<string, "merged" | "closed">) => (node: {
     thread: { id: string };
   }) => byId[node.thread.id] ?? "in-progress";
 
@@ -478,12 +478,12 @@ describe("buildSections", () => {
       tree,
       groupBy: "project",
       projectIds: [],
-      bucketOf: bucketed({ shipped: "done" }),
+      bucketOf: bucketed({ shipped: "merged" }),
     });
     expect(sections.map((section) => section.id)).toEqual([
       "project:p1",
       "project:p2",
-      "status:done",
+      "status:merged",
     ]);
     expect(sections[0]!.roots.map((root) => root.thread.id)).toEqual(["live"]);
     expect(sections[2]!.roots.map((root) => root.thread.id)).toEqual(["shipped"]);
@@ -495,17 +495,17 @@ describe("buildSections", () => {
       thread({ id: "shipped", projectId: "p1", isPinned: true }),
       thread({ id: "shelved", projectId: "p1", isPinned: true }),
     ]);
-    const bucketOf = bucketed({ shipped: "done", shelved: "backlog" });
+    const bucketOf = bucketed({ shipped: "merged" });
     const ids = (sections: { id: string; roots: { thread: { id: string } }[] }[], id: string) =>
       sections.find((section) => section.id === id)?.roots.map((root) => root.thread.id);
 
     const byProject = buildSections({ tree, groupBy: "project", projectIds: [], bucketOf });
     expect(ids(byProject, "pinned")).toEqual(["focus", "shelved"]);
-    expect(ids(byProject, "status:done")).toEqual(["shipped"]);
+    expect(ids(byProject, "status:merged")).toEqual(["shipped"]);
 
     const byStatus = buildSections({ tree, groupBy: "status", projectIds: [], bucketOf });
     expect(ids(byStatus, "pinned")).toEqual(["focus", "shelved"]);
-    expect(ids(byStatus, "status:done")).toEqual(["shipped"]);
+    expect(ids(byStatus, "status:merged")).toEqual(["shipped"]);
   });
 
   // Without this a thread could not be sent to Backlog in the project view
@@ -523,22 +523,37 @@ describe("buildSections", () => {
         .filter((section) => section.kind === "status")
         .map((section) => section.id);
     expect(parked(false)).toEqual([]);
-    expect(parked(true)).toEqual([
-      "status:done",
-      "status:backlog",
-      "status:canceled",
+    expect(parked(true)).toEqual(["status:merged", "status:closed"]);
+  });
+
+  it("shows all buckets but Archived when grouping by status, empty ones included", () => {
+    const tree = run([thread({ id: "t1", projectId: "p1" })]);
+    expect(sectionsOf(tree, "status").map((section) => section.name)).toEqual([
+      "Needs attention",
+      "In progress",
+      "Complete",
+      "Pull request",
+      "Merged",
+      "Closed",
     ]);
   });
 
-  it("shows all five buckets when grouping by status, empty ones included", () => {
-    const tree = run([thread({ id: "t1", projectId: "p1" })]);
-    expect(sectionsOf(tree, "status").map((section) => section.name)).toEqual([
-      "Done",
-      "In review",
-      "In progress",
-      "Backlog",
-      "Canceled",
-    ]);
+  it("shows Archived in both views only while the option is on", () => {
+    const tree = run(
+      [thread({ id: "live", projectId: "p1" }), thread({ id: "old", projectId: "p1", isArchived: true })],
+      [],
+      true,
+    );
+    const bucketOf = (node: { thread: PluginSidebarThread }) =>
+      statusBucket(undefined, { archived: node.thread.isArchived });
+    const archived = (groupBy: "project" | "status", showArchived: boolean) =>
+      buildSections({ tree, groupBy, projectIds: [], bucketOf, showArchived })
+        .find((section) => section.id === "status:archived")
+        ?.roots.map((root) => root.thread.id);
+    expect(archived("status", false)).toBeUndefined();
+    expect(archived("project", false)).toBeUndefined();
+    expect(archived("status", true)).toEqual(["old"]);
+    expect(archived("project", true)).toEqual(["old"]);
   });
 
   it("lifts threads waiting on a person, but never above a hand-placed row", () => {
@@ -627,5 +642,46 @@ describe("last prompted", () => {
     expect(ids(run([older, newer], order, false, [], 1000, prompts), "p1")).toEqual(
       ["older", "newer"],
     );
+  });
+});
+
+describe("buildSections with folder projects", () => {
+  const folders = [{ id: "f1", name: "Lab", folders: ["~/lab"] }];
+  const tree = run([
+    thread({ id: "a1", projectId: "p1" }),
+    thread({ id: "a2", projectId: "p1" }),
+    thread({ id: "b1", projectId: "p2" }),
+  ]);
+  const filedInLab = new Set(["a1", "b1"]);
+  const build = (projectIds: string[] = []) =>
+    buildSections({
+      tree,
+      groupBy: "project",
+      projectIds,
+      bucketOf: () => statusBucket(undefined),
+      folderProjects: folders,
+      folderOf: (node) => (filedInLab.has(node.thread.id) ? "f1" : null),
+    });
+
+  it("files matched threads under the folder heading ahead of the projects", () => {
+    const sections = build();
+    expect(sections.map((section) => [section.id, section.kind, section.threadCount])).toEqual([
+      ["folder:f1", "folder", 2],
+      ["project:p1", "project", 1],
+      ["project:p2", "project", 0],
+    ]);
+    expect(sections[0]!.roots.map((root) => root.thread.id).sort()).toEqual(["a1", "b1"]);
+    expect(sections[1]!.roots.map((root) => root.thread.id)).toEqual(["a2"]);
+  });
+
+  it("filters by folder project key", () => {
+    const sections = build(["folder:f1"]);
+    expect(sections.map((section) => section.id)).toEqual(["folder:f1"]);
+  });
+
+  it("keeps a bb project's filed threads under their folder heading", () => {
+    const sections = build(["p2"]);
+    expect(sections.map((section) => section.id)).toEqual(["folder:f1", "project:p2"]);
+    expect(sections[0]!.roots.map((root) => root.thread.id)).toEqual(["b1"]);
   });
 });
